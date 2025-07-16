@@ -1,0 +1,7 @@
+pdfplumber
+langchain
+faiss-cpu 
+llama-index 
+sentence-transformers
+tqdm
+ollama
