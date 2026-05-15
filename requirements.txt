@@ -1,10 +1,10 @@
 pdfplumber
-langchain
-langchain-community
-langchain-core
-langchain-groq
-faiss-cpu
-sentence-transformers
+langchain==0.3.25
+langchain-community==0.3.24
+langchain-core==0.3.58
+langchain-groq==0.3.2
+faiss-cpu==1.10.0
+sentence-transformers==3.4.1
 tqdm
 ollama
 flask
