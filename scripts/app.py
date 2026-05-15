@@ -1,23 +1,37 @@
 import os
+import traceback
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.llms import Ollama
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
 # ---- Config ----
 VECTOR_STORE_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_vectors")
-EMBED_MODEL = "all-MiniLM-L6-v2"
+EMBED_MODEL = "all-MiniLM-L6-v2"  # lightweight — fits in cloud free-tier RAM
 
 # ---- Load FAISS ----
-print("Loading vector store...")
 embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
 db = FAISS.load_local(VECTOR_STORE_FOLDER, embedder, allow_dangerous_deserialization=True)
 retriever = db.as_retriever(search_kwargs={"k": 5})
 
-# ---- Load LLM ----
-llm = Ollama(model="gemma4", temperature=0.3)
+# ---- Load LLM: Groq in cloud, Ollama locally ----
+groq_api_key = os.environ.get("GROQ_API_KEY")
+
+if groq_api_key:
+    from langchain_groq import ChatGroq
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        temperature=0.2,
+        api_key=groq_api_key,
+    )
+    print("Using Groq (cloud)")
+else:
+    from langchain_community.llms import Ollama
+    llm = Ollama(model="gemma4", temperature=0.2)
+    print("Using Ollama (local)")
 
 # ---- Prompt ----
 qa_prompt = ChatPromptTemplate.from_messages([
@@ -40,13 +54,12 @@ Context: {context}"""),
 
 docs_chain = create_stuff_documents_chain(llm, qa_prompt)
 
-# ---- Simple manual session history ----
+# ---- Per-user session history (keyed by WhatsApp phone number) ----
 session_store: dict[str, list] = {}
 
-def answer_query(query: str, session_id: str = "cli") -> tuple[str, list]:
+def answer_query(query: str, session_id: str) -> str:
     history = session_store.get(session_id, [])
 
-    # Build retrieval query: combine last human turn + current query for context
     retrieval_query = query
     if history:
         last_human = next((m.content for m in reversed(history) if isinstance(m, HumanMessage)), "")
@@ -58,31 +71,44 @@ def answer_query(query: str, session_id: str = "cli") -> tuple[str, list]:
     answer = docs_chain.invoke({
         "input": query,
         "context": docs,
-        "chat_history": history[-6:],  # last 3 exchanges
+        "chat_history": history[-6:],
     })
 
-    # Store turn in history
     if session_id not in session_store:
         session_store[session_id] = []
     session_store[session_id].extend([HumanMessage(content=query), AIMessage(content=answer)])
-    session_store[session_id] = session_store[session_id][-10:]  # keep last 5 exchanges
+    session_store[session_id] = session_store[session_id][-10:]
 
-    return answer, docs
+    return answer
 
+# ---- Flask App ----
+app = Flask(__name__)
 
-def ask(query: str, session_id: str = "cli") -> None:
-    print(f"\nQuestion: {query}")
-    answer, docs = answer_query(query, session_id)
-    print(f"\nAnswer:\n{answer}")
-    print("\nSources:")
-    for doc in docs:
-        print(" -", doc.metadata.get("source", "Unknown"))
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp_reply():
+    incoming_msg = request.form.get("Body", "").strip()
+    sender = request.form.get("From", "unknown")
+    resp = MessagingResponse()
+    msg = resp.message()
+
+    if not incoming_msg:
+        msg.body("Please send a question about Ghanaian law and I'll do my best to help.")
+        return str(resp)
+
+    try:
+        answer = answer_query(incoming_msg, sender)
+        msg.body(answer)
+    except Exception:
+        print("ERROR:", traceback.format_exc())
+        msg.body("Sorry, something went wrong. Please try again or contact the Legal Aid Commission of Ghana at 0800-100-950.")
+
+    return str(resp)
+
+@app.route("/health", methods=["GET"])
+def health():
+    return {"status": "ok"}, 200
 
 
 if __name__ == "__main__":
-    while True:
-        q = input("\nAsk me anything about Ghana Law (type 'exit' to quit): ").strip()
-        if q.lower() in ("exit", "quit"):
-            break
-        if q:
-            ask(q)
+    host = os.environ.get("HOST", "127.0.0.1")
+    app.run(host=host, port=5001, debug=False)

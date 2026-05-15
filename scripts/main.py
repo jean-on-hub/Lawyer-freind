@@ -2,11 +2,12 @@ import os
 import pdfplumber
 from tqdm import tqdm
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
-PDF_FOLDER = "Legal_documents"
-VECTOR_STORE_FOLDER = "ghana_law_vectors"
+folder_path = os.path.join(os.path.dirname(__file__), "..", "Legal_documents")
+PDF_FOLDER = os.path.abspath(folder_path)
+VECTOR_STORE_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_vectors")
 EMBED_MODEL = "all-MiniLM-L6-v2"
 
 # Load sentence embedding model
