@@ -13,4 +13,6 @@ services:
         sync: false
       - key: HF_HOME
         value: /opt/render/project/src/.cache
+      - key: PYTHON_VERSION
+        value: 3.11.9
     healthCheckPath: /health
