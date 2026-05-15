@@ -50,7 +50,7 @@ python scripts/new_file_loader.py
 ### 4. Start the Flask app
 
 ```bash
-python scripts/app.py
+python scripts/server.py
 ```
 
 ### 5. Expose with ngrok (in a separate terminal)
@@ -154,7 +154,7 @@ Lawyer-freind/
 ├── Legal_documents/        # Ghanaian legal PDFs (source documents)
 ├── ghana_law_vectors/      # FAISS vector index (commit this to GitHub)
 ├── scripts/
-│   ├── app.py              # Flask webhook — auto-selects Groq or Ollama
+│   ├── server.py           # Flask webhook — auto-selects Groq or Ollama
 │   ├── bot.py              # Interactive CLI bot (local testing)
 │   ├── new_file_loader.py  # PDF ingestion — run to rebuild index
 │   ├── main.py             # Legacy ingestion script
