@@ -1,6 +1,7 @@
 import os
 import traceback
-from flask import Flask, request
+import requests
+from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -107,6 +108,40 @@ def whatsapp_reply():
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok"}, 200
+
+
+# ---- Telegram Webhook ----
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+def send_telegram_message(chat_id: int, text: str) -> None:
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    # Telegram messages max 4096 chars — split if needed
+    for chunk in [text[i:i+4096] for i in range(0, len(text), 4096)]:
+        requests.post(url, json={"chat_id": chat_id, "text": chunk}, timeout=10)
+
+@app.route("/telegram", methods=["POST"])
+def telegram_reply():
+    data = request.get_json(silent=True) or {}
+    message = data.get("message") or data.get("edited_message")
+    if not message:
+        return jsonify({"ok": True})
+
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+
+    if not text:
+        return jsonify({"ok": True})
+
+    try:
+        answer = answer_query(text, session_id=f"tg_{chat_id}")
+        send_telegram_message(chat_id, answer)
+    except Exception:
+        print("TELEGRAM ERROR:", traceback.format_exc())
+        send_telegram_message(chat_id, "Sorry, something went wrong. Please try again or call the Legal Aid Commission: 0800-100-950.")
+
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

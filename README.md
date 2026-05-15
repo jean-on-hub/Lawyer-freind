@@ -107,12 +107,22 @@ git push
 
 Render gives you a public URL like `https://lawyer-freind.onrender.com`.
 
-### 4. Configure Twilio
+### 4. Configure Twilio (WhatsApp)
 
 Set the webhook URL to:
 ```
 https://lawyer-freind.onrender.com/whatsapp
 ```
+
+### 5. Configure Telegram (optional)
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → copy the token
+2. Add `TELEGRAM_BOT_TOKEN` to your Render environment variables
+3. Register the webhook (run once in your browser or with curl):
+   ```
+   https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://lawyer-freind.onrender.com/telegram
+   ```
+4. Message your bot on Telegram — it's live.
 
 > **Note:** Render's free tier spins down after 15 minutes of inactivity. The first message after idle will take ~30 seconds (cold start). Upgrade to Render's $7/month plan to keep it always-on.
 

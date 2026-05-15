@@ -12,3 +12,4 @@ twilio
 pypdf
 pymupdf
 gunicorn
+requests
