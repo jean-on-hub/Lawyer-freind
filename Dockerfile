@@ -1,21 +1,21 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Install system dependencies required by pymupdf and faiss
+# Merge all system + Python deps into one RUN layer to reduce image size and vulnerabilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --upgrade pip
 
-# Install Python dependencies first (cached layer)
+# Install Python dependencies (cached layer — only rebuilds if requirements.txt changes)
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download embedding model into the image (no runtime download needed)
-RUN HF_HOME=/app/.cache python scripts/download_model.py 2>/dev/null || \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+COPY scripts/download_model.py scripts/download_model.py
+RUN HF_HOME=/app/.cache python scripts/download_model.py
 
 # Copy the rest of the project
 COPY . .
@@ -23,6 +23,10 @@ COPY . .
 ENV HF_HOME=/app/.cache
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 10000
+# Use a start script so exec form CMD works with $PORT
+COPY start.sh .
+RUN chmod +x start.sh
 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000", "--workers", "1", "--timeout", "120"]
+EXPOSE ${PORT:-10000}
+
+CMD ["./start.sh"]
