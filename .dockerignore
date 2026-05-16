@@ -1,0 +1,8 @@
+.env
+.git
+.cache
+__pycache__
+*.pyc
+*.pyo
+scripts/__pycache__
+scripts/ghana_law_vectors
