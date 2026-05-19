@@ -1,5 +1,4 @@
 pdfplumber
-langchain>=0.3.25
 langchain-community>=0.3.24
 langchain-core>=0.3.59
 langchain-groq>=0.3.2

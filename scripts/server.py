@@ -5,9 +5,10 @@ from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
 # ---- Config ----
 VECTOR_STORE_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_vectors")
@@ -53,7 +54,11 @@ Context: {context}"""),
     ("human", "{input}"),
 ])
 
-docs_chain = create_stuff_documents_chain(llm, qa_prompt)
+def _format_docs(inputs: dict) -> dict:
+    inputs["context"] = "\n\n".join(doc.page_content for doc in inputs["context"])
+    return inputs
+
+docs_chain = RunnablePassthrough.assign() | _format_docs | qa_prompt | llm | StrOutputParser()
 
 # ---- Per-user session history (keyed by WhatsApp phone number) ----
 session_store: dict[str, list] = {}
