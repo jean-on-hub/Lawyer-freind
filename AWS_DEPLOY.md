@@ -77,13 +77,22 @@ sudo usermod -aG docker ec2-user
 newgrp docker
 ```
 
-Install Docker Compose plugin:
+Install Docker Compose and Buildx plugins (latest versions):
 ```bash
 sudo mkdir -p /usr/local/lib/docker/cli-plugins
+
+# Docker Compose
 sudo curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-docker compose version   # verify
+
+# Buildx (compose build requires >= 0.17.0; system package is often older)
+BUILDX_VER=$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+sudo curl -SL "https://github.com/docker/buildx/releases/latest/download/buildx-${BUILDX_VER}.linux-amd64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-buildx
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+
+docker compose version && docker buildx version   # verify both
 ```
 
 ---

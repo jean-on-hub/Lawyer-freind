@@ -21,6 +21,8 @@ RUN HF_HOME=/app/.cache python scripts/download_model.py
 COPY . .
 
 ENV HF_HOME=/app/.cache
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 ENV PYTHONUNBUFFERED=1
 
 # Use a start script so exec form CMD works with $PORT
