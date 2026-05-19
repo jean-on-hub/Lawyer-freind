@@ -1,4 +1,5 @@
 import os
+import re
 import traceback
 import requests
 from flask import Flask, request, jsonify
@@ -37,17 +38,19 @@ else:
 
 # ---- Prompt ----
 qa_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a free legal information assistant specializing in Ghanaian law. You help ordinary Ghanaians understand their legal rights and options.
+    ("system", """You are a free legal assistant for Ghanaians. You give short, clear answers based on Ghanaian law.
 
-Use the context below to answer the question as helpfully as possible. Explain what the relevant law says, what rights or steps apply, and what the user should know.
+IMPORTANT RULES:
+1. If the question is broad or vague, ask ONE short clarifying question before answering. Do not dump a list of possibilities.
+2. When you do answer, be direct and specific — no bullet-point encyclopaedias. 2–4 short paragraphs max.
+3. Plain language only. No legal jargon.
+4. Use the context below. If it only partly covers the topic, answer what you can and say what's unclear.
+5. End every answer with: "For serious matters, call the Legal Aid Commission free: 0800-100-950."
 
-If the context touches on the topic but does not fully answer the question, share what it does say and note what is unclear.
-Only say you have no information if the context is completely unrelated to the question.
-
-Rules:
-- Plain language only — no legal jargon
-- Keep answers concise and practical
-- Always end with: "For serious matters, consult a Ghanaian lawyer or call the Legal Aid Commission free line: 0800-100-950."
+Examples of good clarifying questions:
+- "Are you buying or selling the land?"
+- "Is this about a marriage, divorce, or inheritance?"
+- "Who currently owns the land — an individual, a family, or a stool?"
 
 Context: {context}"""),
     MessagesPlaceholder("chat_history"),
@@ -102,7 +105,7 @@ def whatsapp_reply():
         return str(resp)
 
     try:
-        answer = answer_query(incoming_msg, sender)
+        answer = _clean(answer_query(incoming_msg, sender))
         msg.body(answer)
     except Exception:
         print("ERROR:", traceback.format_exc())
@@ -118,13 +121,36 @@ def health():
 # ---- Telegram Webhook ----
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
+def _clean_whatsapp(text: str) -> str:
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)                     # **bold** → *bold*
+    text = re.sub(r'__(.+?)__', r'*\1*', text)                          # __bold__ → *bold*
+    text = re.sub(r'\*([^*\n]+)\*', r'_\1_', text)                      # *italic* → _italic_
+    text = re.sub(r'~~(.+?)~~', r'~\1~', text)                          # ~~strike~~ → ~strike~
+    text = re.sub(r'`{3}[^\n]*\n?(.*?)`{3}', r'```\1```', text, flags=re.DOTALL)
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)  # ## Header → *bold*
+    text = re.sub(r'^\s*-\s+', '• ', text, flags=re.MULTILINE)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+def _to_telegram_html(text: str) -> str:
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    text = re.sub(r'```(?:\w+\n)?(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
+    text = re.sub(r'\*\*(.+?)\*\*|__(.+?)__', lambda m: f'<b>{m.group(1) or m.group(2)}</b>', text)
+    text = re.sub(r'\*([^*\n]+)\*|_([^_\n]+)_', lambda m: f'<i>{m.group(1) or m.group(2)}</i>', text)
+    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    text = re.sub(r'^#{1,6}\s+(.+)$', lambda m: f'<b>{m.group(1)}</b>', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*[-*]\s+', '• ', text, flags=re.MULTILINE)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 def send_telegram_message(chat_id: int, text: str) -> None:
     if not TELEGRAM_BOT_TOKEN:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    # Telegram messages max 4096 chars — split if needed
+    text = _to_telegram_html(text)
     for chunk in [text[i:i+4096] for i in range(0, len(text), 4096)]:
-        requests.post(url, json={"chat_id": chat_id, "text": chunk}, timeout=10)
+        requests.post(url, json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}, timeout=10)
 
 @app.route("/telegram", methods=["POST"])
 def telegram_reply():
