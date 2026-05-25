@@ -98,6 +98,17 @@ def _log(channel: str, user_id: str, duration_ms: int, error: bool = False):
 # ---- Per-user session history (keyed by WhatsApp phone number) ----
 session_store: dict[str, list] = {}
 
+RESET_TRIGGERS = {"new", "reset", "start over", "start fresh", "clear", "new topic",
+                  "new conversation", "/new", "/start", "/reset"}
+RESET_REPLY = ("Starting fresh! What legal question can I help you with?\n\n"
+               "For serious matters, call the Legal Aid Commission free: 0800-100-950.")
+
+def is_reset(text: str) -> bool:
+    return text.lower().strip() in RESET_TRIGGERS
+
+def clear_session(session_id: str) -> None:
+    session_store.pop(session_id, None)
+
 def answer_query(query: str, session_id: str) -> str:
     history = session_store.get(session_id, [])
 
@@ -134,6 +145,11 @@ def whatsapp_reply():
 
     if not incoming_msg:
         msg.body("Please send a question about Ghanaian law and I'll do my best to help.")
+        return str(resp)
+
+    if is_reset(incoming_msg):
+        clear_session(sender)
+        msg.body(RESET_REPLY)
         return str(resp)
 
     t0 = time.monotonic()
@@ -224,6 +240,11 @@ def telegram_reply():
     text = message.get("text", "").strip()
 
     if not text:
+        return jsonify({"ok": True})
+
+    if is_reset(text):
+        clear_session(f"tg_{chat_id}")
+        send_telegram_message(chat_id, RESET_REPLY)
         return jsonify({"ok": True})
 
     t0 = time.monotonic()
