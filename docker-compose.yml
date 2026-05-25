@@ -8,3 +8,5 @@ services:
       - .env
     environment:
       - PORT=10000
+    volumes:
+      - ./usage.db:/app/usage.db

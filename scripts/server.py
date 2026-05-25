@@ -1,5 +1,8 @@
+import hashlib
 import os
 import re
+import sqlite3
+import time
 import traceback
 import requests
 from flask import Flask, request, jsonify
@@ -63,6 +66,35 @@ def _format_docs(inputs: dict) -> dict:
 
 docs_chain = RunnablePassthrough.assign() | _format_docs | qa_prompt | llm | StrOutputParser()
 
+# ---- Usage tracking (SQLite) ----
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "usage.db")
+
+def _db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts        TEXT    DEFAULT (datetime('now')),
+            channel   TEXT,
+            user_hash TEXT,
+            duration_ms INTEGER,
+            error     INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    return conn
+
+def _log(channel: str, user_id: str, duration_ms: int, error: bool = False):
+    user_hash = hashlib.sha256(user_id.encode()).hexdigest()[:16]
+    try:
+        with _db() as conn:
+            conn.execute(
+                "INSERT INTO messages (channel, user_hash, duration_ms, error) VALUES (?,?,?,?)",
+                (channel, user_hash, duration_ms, int(error))
+            )
+    except Exception:
+        pass  # never let logging break the bot
+
 # ---- Per-user session history (keyed by WhatsApp phone number) ----
 session_store: dict[str, list] = {}
 
@@ -104,11 +136,14 @@ def whatsapp_reply():
         msg.body("Please send a question about Ghanaian law and I'll do my best to help.")
         return str(resp)
 
+    t0 = time.monotonic()
     try:
-        answer = _clean(answer_query(incoming_msg, sender))
+        answer = _clean_whatsapp(answer_query(incoming_msg, sender))
         msg.body(answer)
+        _log("whatsapp", sender, int((time.monotonic() - t0) * 1000))
     except Exception:
         print("ERROR:", traceback.format_exc())
+        _log("whatsapp", sender, int((time.monotonic() - t0) * 1000), error=True)
         msg.body("Sorry, something went wrong. Please try again or contact the Legal Aid Commission of Ghana at 0800-100-950.")
 
     return str(resp)
@@ -116,6 +151,32 @@ def whatsapp_reply():
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok"}, 200
+
+@app.route("/stats", methods=["GET"])
+def stats():
+    key = os.environ.get("STATS_KEY")
+    if key and request.args.get("key") != key:
+        return jsonify({"error": "unauthorized"}), 401
+    with _db() as conn:
+        totals = conn.execute("""
+            SELECT channel,
+                   COUNT(*)                             AS messages,
+                   COUNT(DISTINCT user_hash)            AS unique_users,
+                   SUM(error)                           AS errors,
+                   ROUND(AVG(duration_ms))              AS avg_ms
+            FROM messages GROUP BY channel
+        """).fetchall()
+        daily = conn.execute("""
+            SELECT DATE(ts) AS date, channel, COUNT(*) AS messages
+            FROM messages
+            GROUP BY date, channel
+            ORDER BY date DESC
+            LIMIT 30
+        """).fetchall()
+    return jsonify({
+        "totals": [dict(zip(["channel","messages","unique_users","errors","avg_ms"], r)) for r in totals],
+        "last_30_days": [dict(zip(["date","channel","messages"], r)) for r in daily],
+    })
 
 
 # ---- Telegram Webhook ----
@@ -165,11 +226,14 @@ def telegram_reply():
     if not text:
         return jsonify({"ok": True})
 
+    t0 = time.monotonic()
     try:
         answer = answer_query(text, session_id=f"tg_{chat_id}")
         send_telegram_message(chat_id, answer)
+        _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000))
     except Exception:
         print("TELEGRAM ERROR:", traceback.format_exc())
+        _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000), error=True)
         send_telegram_message(chat_id, "Sorry, something went wrong. Please try again or call the Legal Aid Commission: 0800-100-950.")
 
     return jsonify({"ok": True})
