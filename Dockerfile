@@ -9,9 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --upgrade pip
 
-# Install Python dependencies (cached layer — only rebuilds if requirements.txt changes)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install CPU-only PyTorch first — avoids pulling the 2 GB CUDA build — then the rest
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Pre-download embedding model into the image (no runtime download needed)
 COPY scripts/download_model.py scripts/download_model.py
