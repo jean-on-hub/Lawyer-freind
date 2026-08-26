@@ -111,6 +111,11 @@ def build_amendment_map(names: list[str]) -> dict[str, list[str]]:
     return out
 
 
+def _dedupe_key(name: str) -> str:
+    """Same document harvested twice differs only by the hash prefix."""
+    return re.sub(r"^[0-9a-f]{6,}_", "", name).lower().strip()
+
+
 def find_sources(limit: int | None, apply_filter: bool) -> list[str]:
     seen, out = set(), []
     for d in SOURCE_DIRS:
@@ -119,11 +124,11 @@ def find_sources(limit: int | None, apply_filter: bool) -> list[str]:
         for entry in sorted(os.listdir(d)):
             path = os.path.join(d, entry)
             low = entry.lower()
-            if not os.path.isfile(path) or entry in seen:
+            if not os.path.isfile(path) or _dedupe_key(entry) in seen:
                 continue
             if not (low.endswith(".pdf") or low.endswith(TEXT_EXTS)):
                 continue
-            seen.add(entry)
+            seen.add(_dedupe_key(entry))
             # Curated notes are always kept; the filter only judges harvested PDFs
             if apply_filter and low.endswith(".pdf") and not is_legislation(entry):
                 continue
