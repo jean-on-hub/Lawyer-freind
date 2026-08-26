@@ -247,7 +247,7 @@ def khaya_translate(text: str, pair: str) -> str:
     return out if isinstance(out, str) else (out.get("translation") or out.get("out") or str(out))
 
 
-def khaya_transcribe(audio: bytes, lang: str, content_type: str = "audio/mpeg") -> str:
+def khaya_transcribe(audio: bytes, lang: str, content_type: str = "audio/ogg") -> str:
     """Transcribe Ghanaian-language audio via Khaya. Costs one call."""
     r = requests.post(
         f"{KHAYA_BASE}/asr/v1/transcribe",

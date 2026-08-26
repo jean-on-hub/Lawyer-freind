@@ -342,7 +342,9 @@ def transcribe_voice(audio: bytes, session_id: str, filename: str) -> str:
         # Whisper is English-only. For a non-English user with no quota left it is
         # still the better attempt than nothing, since many users code-switch.
         return ml.transcribe_english(audio, filename)
-    return ml.khaya_transcribe(audio, lang)
+    # Label the audio honestly — both Telegram and Twilio send OGG/Opus
+    content_type = "audio/wav" if filename.endswith(".wav") else "audio/ogg"
+    return ml.khaya_transcribe(audio, lang, content_type=content_type)
 
 # ---- Flask App ----
 app = Flask(__name__)
