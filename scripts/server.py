@@ -150,27 +150,72 @@ def handle_language_command(text: str, session_id: str) -> str | None:
     except Exception:
         return confirm
 
-def answer_in_language(query: str, session_id: str) -> str:
+def answer_in_language(query: str, session_id: str) -> tuple[str, str]:
     """Run the English RAG pipeline, translating in and out when needed.
 
+    Returns (reply_to_send, english_answer). The English is kept because machine
+    translation of legal text can shift meaning, so translated replies carry the
+    original alongside — and because TTS is English-only.
+
     Falls back to English rather than failing if Khaya errors or the quota is
-    spent — a slightly wrong language beats no answer at all.
+    spent: a reply in the wrong language beats no reply at all.
     """
     lang = ml.get_language(session_id)
     if lang == "en":
-        return answer_query(query, session_id)
+        answer = answer_query(query, session_id)
+        return answer, answer
 
     if not ml.khaya_budget_left(2):
         answer = answer_query(query, session_id)
-        return answer + "\n\n(Ghanaian-language quota for this month is used up, so this reply is in English.)"
+        return answer + "\n\n(This month's Ghanaian-language quota is used up, so this reply is in English.)", answer
 
     try:
         english_q = ml.to_english(query, lang)
         answer = answer_query(english_q, session_id)
-        return ml.from_english(answer, lang)
+        translated = ml.from_english(answer, lang)
+        # English shown alongside so a bilingual reader can catch a bad translation
+        return f"{translated}\n\n———\n(English)\n{answer}", answer
     except Exception:
         print("TRANSLATION ERROR:", traceback.format_exc())
-        return answer_query(query, session_id)
+        answer = answer_query(query, session_id)
+        return answer, answer
+
+# ---- Voice replies ----
+# Orpheus caps input at 200 characters, so we speak a short summary rather than
+# burning several calls narrating a full legal answer.
+VOICE_PROMPT = ("\n\n---\nWant replies as voice notes? Reply *voice*. "
+                "To keep replies as text, reply *text*.")
+
+def spoken_summary(answer: str) -> str:
+    if len(answer) <= ml.TTS_MAX_CHARS:
+        return answer
+    try:
+        result = llm.invoke(
+            "Summarise this legal answer in ONE spoken sentence under 180 characters. "
+            "Plain words, no lists, no phone numbers:\n\n" + answer
+        )
+        summary = getattr(result, "content", result).strip()
+        if summary:
+            return summary[:ml.TTS_MAX_CHARS]
+    except Exception:
+        print("SUMMARY ERROR:", traceback.format_exc())
+    cut = answer[:ml.TTS_MAX_CHARS]
+    return cut.rsplit(".", 1)[0] + "." if "." in cut else cut
+
+def wants_voice_reply(session_id: str) -> bool:
+    return ml.get_voice_pref(session_id) == "voice" and ml.tts_budget_left()
+
+def handle_voice_command(text: str, session_id: str) -> str | None:
+    word = text.lower().strip().lstrip("/")
+    if word not in ("voice", "text"):
+        return None
+    if word == "voice":
+        if not ml.tts_budget_left():
+            return "Voice replies aren't available right now. I'll keep replying with text."
+        ml.set_voice_pref(session_id, "voice")
+        return "Okay — I'll send a short voice note with each answer, plus the full text."
+    ml.set_voice_pref(session_id, "text")
+    return "Okay — text replies only."
 
 def answer_query(query: str, session_id: str) -> str:
     history = session_store.get(session_id, [])
@@ -255,8 +300,10 @@ def whatsapp_reply():
 
     t0 = time.monotonic()
     try:
-        answer = _clean_whatsapp(answer_in_language(incoming_msg, sender))
-        msg.body(answer)
+        # Text only on WhatsApp: Twilio needs a publicly hosted URL for media,
+        # which the bot has no way to serve.
+        answer, _ = answer_in_language(incoming_msg, sender)
+        msg.body(_clean_whatsapp(answer))
         _log("whatsapp", sender, int((time.monotonic() - t0) * 1000))
     except Exception:
         print("ERROR:", traceback.format_exc())
@@ -291,6 +338,7 @@ def stats():
             LIMIT 30
         """).fetchall()
     used = ml.khaya_calls_this_month()
+    tts_used = ml.tts_calls_this_month()
     return jsonify({
         "totals": [dict(zip(["channel","messages","unique_users","errors","avg_ms"], r)) for r in totals],
         "last_30_days": [dict(zip(["date","channel","messages"], r)) for r in daily],
@@ -299,6 +347,12 @@ def stats():
             "monthly_quota": ml.KHAYA_MONTHLY_QUOTA,
             "remaining": max(0, ml.KHAYA_MONTHLY_QUOTA - used),
             "enabled": bool(ml.KHAYA_API_KEY),
+        },
+        "tts_quota": {
+            "used_this_month": tts_used,
+            "monthly_quota": ml.TTS_MONTHLY_QUOTA,
+            "remaining": max(0, ml.TTS_MONTHLY_QUOTA - tts_used),
+            "enabled": ml.TTS_ENABLED,
         },
     })
 
@@ -339,6 +393,16 @@ def download_telegram_file(file_id: str) -> bytes:
     r.raise_for_status()
     return r.content
 
+def send_telegram_voice(chat_id: int, wav: bytes) -> None:
+    """Orpheus returns WAV, which is not Telegram's voice-note format (OGG/Opus),
+    so this goes out via sendAudio and appears as a playable audio clip."""
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAudio",
+        data={"chat_id": chat_id, "title": "Answer"},
+        files={"audio": ("answer.wav", wav, "audio/wav")},
+        timeout=60,
+    )
+
 def send_telegram_message(chat_id: int, text: str) -> None:
     if not TELEGRAM_BOT_TOKEN:
         return
@@ -360,6 +424,7 @@ def telegram_reply():
 
     # Voice note or forwarded audio: Telegram gives a file_id to resolve first
     voice = message.get("voice") or message.get("audio")
+    sent_voice = bool(voice)
     if not text and voice:
         try:
             audio = download_telegram_file(voice["file_id"])
@@ -385,9 +450,26 @@ def telegram_reply():
         send_telegram_message(chat_id, lang_reply)
         return jsonify({"ok": True})
 
+    voice_reply = handle_voice_command(text, session_id)
+    if voice_reply:
+        send_telegram_message(chat_id, voice_reply)
+        return jsonify({"ok": True})
+
     t0 = time.monotonic()
     try:
-        answer = answer_in_language(text, session_id)
+        answer, english = answer_in_language(text, session_id)
+
+        if wants_voice_reply(session_id):
+            try:
+                send_telegram_voice(chat_id, ml.synthesize_english(spoken_summary(english)))
+            except Exception:
+                print("TTS ERROR:", traceback.format_exc())
+
+        # Ask once, only after they have actually used voice, so it stays relevant
+        if sent_voice and not ml.was_asked_about_voice(session_id):
+            ml.mark_asked_about_voice(session_id)
+            answer += VOICE_PROMPT
+
         send_telegram_message(chat_id, answer)
         _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000))
     except Exception:

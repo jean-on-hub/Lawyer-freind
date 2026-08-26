@@ -25,6 +25,14 @@ KHAYA_API_KEY = os.environ.get("KHAYA_API_KEY")
 KHAYA_BASE = os.environ.get("KHAYA_BASE", "https://translation-api.ghananlp.org")
 KHAYA_MONTHLY_QUOTA = int(os.environ.get("KHAYA_MONTHLY_QUOTA", "100"))
 
+# Orpheus TTS. English only, ~100 free requests, and it rejects input over 200
+# characters — so we speak a short summary and send the full answer as text.
+TTS_MODEL = os.environ.get("TTS_MODEL", "canopylabs/orpheus-v1-english")
+TTS_VOICE = os.environ.get("TTS_VOICE", "Hannah")
+TTS_MONTHLY_QUOTA = int(os.environ.get("TTS_MONTHLY_QUOTA", "100"))
+TTS_MAX_CHARS = 200
+TTS_ENABLED = os.environ.get("TTS_ENABLED", "true").lower() not in ("false", "0", "no")
+
 # Khaya language codes. "en" stays on the free path and never costs a call.
 LANGUAGES = {
     "english": "en",
@@ -50,6 +58,14 @@ def _db():
             kind  TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_voice (
+            session_id TEXT PRIMARY KEY,
+            pref       TEXT,
+            asked      INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE TABLE IF NOT EXISTS tts_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT DEFAULT (datetime('now')))")
     conn.commit()
     return conn
 
@@ -69,6 +85,86 @@ def set_language(session_id: str, lang: str) -> None:
             conn.execute("INSERT OR REPLACE INTO user_lang (session_id, lang) VALUES (?,?)", (session_id, lang))
     except Exception:
         pass
+
+
+def get_voice_pref(session_id: str) -> str | None:
+    """'voice', 'text', or None when the user has never chosen."""
+    try:
+        with _db() as conn:
+            row = conn.execute("SELECT pref FROM user_voice WHERE session_id = ?", (session_id,)).fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
+def set_voice_pref(session_id: str, pref: str) -> None:
+    try:
+        with _db() as conn:
+            conn.execute(
+                "INSERT INTO user_voice (session_id, pref, asked) VALUES (?,?,1) "
+                "ON CONFLICT(session_id) DO UPDATE SET pref = excluded.pref, asked = 1",
+                (session_id, pref),
+            )
+    except Exception:
+        pass
+
+
+def was_asked_about_voice(session_id: str) -> bool:
+    try:
+        with _db() as conn:
+            row = conn.execute("SELECT asked FROM user_voice WHERE session_id = ?", (session_id,)).fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return True  # on error, stay quiet rather than nag
+
+
+def mark_asked_about_voice(session_id: str) -> None:
+    try:
+        with _db() as conn:
+            conn.execute(
+                "INSERT INTO user_voice (session_id, asked) VALUES (?,1) "
+                "ON CONFLICT(session_id) DO UPDATE SET asked = 1",
+                (session_id,),
+            )
+    except Exception:
+        pass
+
+
+def tts_calls_this_month() -> int:
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM tts_calls WHERE strftime('%Y-%m', ts) = strftime('%Y-%m', 'now')"
+            ).fetchone()
+        return row[0]
+    except Exception:
+        return 0
+
+
+def tts_budget_left() -> bool:
+    return TTS_ENABLED and bool(GROQ_API_KEY) and tts_calls_this_month() < TTS_MONTHLY_QUOTA
+
+
+def synthesize_english(text: str) -> bytes:
+    """Speak up to TTS_MAX_CHARS of English. Returns WAV bytes. Costs one call."""
+    r = requests.post(
+        "https://api.groq.com/openai/v1/audio/speech",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": TTS_MODEL,
+            "input": text[:TTS_MAX_CHARS],
+            "voice": TTS_VOICE,
+            "response_format": "wav",
+        },
+        timeout=60,
+    )
+    r.raise_for_status()
+    try:
+        with _db() as conn:
+            conn.execute("INSERT INTO tts_calls DEFAULT VALUES")
+    except Exception:
+        pass
+    return r.content
 
 
 def khaya_calls_this_month() -> int:

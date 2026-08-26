@@ -93,6 +93,13 @@ english / twi / ga / ewe / dagbani / fante / frafra
 ```
 Send `language` to see the current setting.
 
+Choose how replies come back:
+```
+voice / text
+```
+Text is the default. The bot asks once, after a user's first voice note, rather than
+prompting everyone — voice replies are metered and most users never want them.
+
 ---
 
 ## Voice Notes & Languages
@@ -120,9 +127,26 @@ Set `KHAYA_API_KEY` in `.env` to enable; leave it unset to run English-only.
 Language is chosen explicitly by the user rather than auto-detected, because detection
 would spend a call on every message.
 
+Translated replies include the **English original underneath**, so a bilingual reader
+can catch a translation that has drifted.
+
 > **Caution:** machine translation of legal information carries real risk — a
 > mistranslated word about eviction or inheritance can lead someone to act wrongly.
 > Keep answers short and always surface the Legal Aid Commission contact.
+
+### Voice replies (Telegram only)
+
+Opt-in per user via the `voice` command. Uses Groq's Orpheus TTS, which is **English
+only**, allows roughly **100 free requests**, and **caps input at 200 characters** —
+so the bot speaks a one-sentence summary and sends the full answer as text beside it.
+
+An org admin must accept the model terms once at
+[console.groq.com/playground](https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english),
+otherwise every request returns HTTP 400. If TTS fails for any reason the answer still
+goes out as text.
+
+WhatsApp gets text only: Twilio requires a publicly hosted URL for outbound media,
+which this bot has no way to serve.
 
 ---
 
