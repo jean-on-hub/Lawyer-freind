@@ -130,7 +130,7 @@ RESET_REPLY = ("Starting fresh! What legal question can I help you with?\n\n"
 # after they send a voice note — because a wall of options at first contact is
 # read by nobody. "help" gives the full list for anyone who wants it.
 WELCOME = (
-    "Akwaaba! I give free legal information about Ghanaian law — land, rent, work, "
+    "I give free legal information about Ghanaian law — land, rent, work, "
     "marriage, inheritance, police and more.\n\n"
     "Write or send a voice note. You can use your own language:\n"
     "english · twi · ga · ewe · fante · dagbani · frafra · kusaal\n\n"
