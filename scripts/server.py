@@ -130,8 +130,8 @@ def clear_session(session_id: str) -> None:
     session_store.pop(session_id, None)
 
 # ---- Language selection ----
-# Chosen explicitly rather than auto-detected: detection would burn a Khaya call
-# on every message, and the free tier only allows 100 calls a month.
+# Users can name a language explicitly; messages written in one are also detected
+# automatically (see maybe_autodetect below).
 LANGUAGE_HELP = ("Reply with a language to switch: " + ", ".join(ml.GHANA_LANGUAGES) + ".\n"
                  "Yoruba is also available. You can send a voice note in English.")
 
@@ -177,6 +177,51 @@ def handle_language_command(text: str, session_id: str) -> str | None:
         return ml.from_english(confirm, code)
     except Exception:
         return confirm
+
+# ---- Automatic language detection ----
+# Someone who only speaks Twi cannot read "reply with the word twi", so relying on
+# the explicit command alone assumes the English literacy this feature exists to
+# work around. Detection uses the LLM (free) rather than Khaya (100 calls/month),
+# and is gated by a local check so English messages are never slowed down.
+GHANAIAN_CHARS = set("ɛɔɖƒŋɣʒʋɲƐƆƉƑŊƔƷ")
+ENGLISH_MARKERS = {"the", "is", "a", "to", "my", "i", "can", "what", "how", "of", "in",
+                   "and", "me", "you", "for", "do", "if", "am", "was", "are", "he", "she",
+                   "it", "they", "we", "have", "has", "want", "need", "please", "with"}
+
+def looks_non_english(text: str) -> bool:
+    if any(ch in GHANAIAN_CHARS for ch in text):
+        return True
+    words = re.findall(r"[a-z']+", text.lower())
+    if len(words) < 3:
+        return False  # too short to judge without false positives
+    return not any(w in ENGLISH_MARKERS for w in words)
+
+def detect_language(text: str) -> str | None:
+    """Ask the LLM which language this is. Returns a LANGUAGES key, or None."""
+    options = ", ".join(ml.GHANA_LANGUAGES + ["yoruba"])
+    try:
+        result = llm.invoke(
+            f"Which language is this message written in? Answer with ONE word from "
+            f"this list and nothing else: {options}. If you are unsure, answer english.\n\n"
+            f"Message: {text}"
+        )
+        word = getattr(result, "content", result).strip().lower().strip(".\"'")
+        return word if word in ml.LANGUAGES else None
+    except Exception:
+        print("DETECT ERROR:", traceback.format_exc())
+        return None
+
+def maybe_autodetect(text: str, session_id: str) -> str | None:
+    """Switch language if the user is writing in one. Returns the language name."""
+    if ml.get_language(session_id) != "eng":
+        return None  # already switched; leaving is an explicit choice
+    if not looks_non_english(text) or not ml.khaya_budget_left(2):
+        return None
+    detected = detect_language(text)
+    if not detected or ml.LANGUAGES[detected] == "eng":
+        return None
+    ml.set_language(session_id, ml.LANGUAGES[detected])
+    return detected
 
 def answer_in_language(query: str, session_id: str) -> tuple[str, str]:
     """Run the English RAG pipeline, translating in and out when needed.
@@ -339,7 +384,10 @@ def whatsapp_reply():
     try:
         # Text only on WhatsApp: Twilio needs a publicly hosted URL for media,
         # which the bot has no way to serve.
+        detected = maybe_autodetect(incoming_msg, sender)
         answer, _ = answer_in_language(incoming_msg, sender)
+        if detected:
+            answer += f'\n\n(Detected {detected.title()}. Reply "english" for English.)'
         msg.body(_clean_whatsapp(answer))
         _log("whatsapp", sender, int((time.monotonic() - t0) * 1000))
     except Exception:
@@ -500,7 +548,10 @@ def telegram_reply():
         return jsonify({"ok": True})
 
     try:
+        detected = maybe_autodetect(text, session_id)
         answer, english = answer_in_language(text, session_id)
+        if detected:
+            answer += f'\n\n(Detected {detected.title()}. Reply "english" for English.)'
 
         if wants_voice_reply(session_id):
             try:
