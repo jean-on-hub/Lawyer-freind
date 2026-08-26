@@ -223,6 +223,15 @@ def maybe_autodetect(text: str, session_id: str) -> str | None:
     ml.set_language(session_id, ml.LANGUAGES[detected])
     return detected
 
+CONTACT_MARKER = "For serious matters"
+
+def _split_contact(answer: str) -> tuple[str, str]:
+    """Separate the Legal Aid sign-off so it can bypass translation intact."""
+    idx = answer.find(CONTACT_MARKER)
+    if idx == -1:
+        return answer, ""
+    return answer[:idx].rstrip(), answer[idx:].strip()
+
 def answer_in_language(query: str, session_id: str) -> tuple[str, str]:
     """Run the English RAG pipeline, translating in and out when needed.
 
@@ -245,9 +254,13 @@ def answer_in_language(query: str, session_id: str) -> tuple[str, str]:
     try:
         english_q = ml.to_english(query, lang)
         answer = answer_query(english_q, session_id)
-        translated = ml.from_english(answer, lang)
+        # Never translate the contact details: a round trip turned lac.gov.gh into
+        # lc.gov.gh, which would send people to a domain that does not exist.
+        body, contact = _split_contact(answer)
+        translated = ml.from_english(body, lang)
+        reply = f"{translated}\n\n{contact}" if contact else translated
         # English shown alongside so a bilingual reader can catch a bad translation
-        return f"{translated}\n\n———\n(English)\n{answer}", answer
+        return f"{reply}\n\n———\n(English)\n{answer}", answer
     except Exception:
         print("TRANSLATION ERROR:", traceback.format_exc())
         answer = answer_query(query, session_id)
