@@ -34,7 +34,12 @@ SOURCE_DIRS = [
     os.path.join(ROOT, "Legal_documents"),
     os.path.join(ROOT, "Legal_documents", "repository"),
     os.path.join(ROOT, "Legal_documents", "crawled"),
+    # Hand-written referral notes: where to actually go, which statutes never say.
+    # Always indexed, never filtered. "pending_verification" is deliberately not
+    # listed — a draft with unconfirmed phone numbers must not reach users.
+    os.path.join(ROOT, "Legal_documents", "practical"),
 ]
+TEXT_EXTS = (".md", ".txt")
 DB_DIR = os.path.join(ROOT, "ghana_law_lancedb")
 TABLE = "ghana_law"
 EMBED_MODEL = "all-MiniLM-L6-v2"
@@ -65,19 +70,21 @@ def is_legislation(name: str) -> bool:
     return bool(LAW_RE.search(stem))
 
 
-def find_pdfs(limit: int | None, apply_filter: bool) -> list[str]:
+def find_sources(limit: int | None, apply_filter: bool) -> list[str]:
     seen, out = set(), []
     for d in SOURCE_DIRS:
         if not os.path.isdir(d):
             continue
         for entry in sorted(os.listdir(d)):
             path = os.path.join(d, entry)
-            if not entry.lower().endswith(".pdf") or not os.path.isfile(path):
+            low = entry.lower()
+            if not os.path.isfile(path) or entry in seen:
                 continue
-            if entry in seen:
+            if not (low.endswith(".pdf") or low.endswith(TEXT_EXTS)):
                 continue
             seen.add(entry)
-            if apply_filter and not is_legislation(entry):
+            # Curated notes are always kept; the filter only judges harvested PDFs
+            if apply_filter and low.endswith(".pdf") and not is_legislation(entry):
                 continue
             out.append(path)
             if limit and len(out) >= limit:
@@ -87,17 +94,17 @@ def find_pdfs(limit: int | None, apply_filter: bool) -> list[str]:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--no-filter", action="store_true", help="index every PDF, not just legislation")
+    ap.add_argument("--no-filter", action="store_true", help="index every document, not just legislation")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--chunk-size", type=int, default=1000)
     ap.add_argument("--overlap", type=int, default=150)
     args = ap.parse_args()
 
-    pdfs = find_pdfs(args.limit, not args.no_filter)
+    pdfs = find_sources(args.limit, not args.no_filter)
     if not pdfs:
         print("No PDFs found. Harvest first: python scripts/harvest_dspace.py")
         return 1
-    print(f"{len(pdfs)} PDFs to index"
+    print(f"{len(pdfs)} documents to index"
           f"{'' if args.no_filter else ' (legislation only)'}")
 
     embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
@@ -119,7 +126,12 @@ def main():
     for i, path in enumerate(pdfs, 1):
         name = os.path.basename(path)
         try:
-            docs = PyMuPDFLoader(path).load()
+            if path.lower().endswith(TEXT_EXTS):
+                from langchain_core.documents import Document as _Doc
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    docs = [_Doc(page_content=fh.read(), metadata={"page": 0})]
+            else:
+                docs = PyMuPDFLoader(path).load()
             chunks = splitter.split_documents(docs)
             chunks = [c for c in chunks if len(c.page_content.strip()) > 50]
             if not chunks:
