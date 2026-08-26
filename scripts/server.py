@@ -464,7 +464,7 @@ def whatsapp_reply():
         # which the bot has no way to serve.
         detected = maybe_autodetect(incoming_msg, sender)
         answer, _ = answer_in_language(incoming_msg, sender)
-        if detected:
+        if detected and detected != "english":
             answer += f'\n\n(Detected {detected.title()}. Reply "english" for English.)'
         msg.body(_clean_whatsapp(answer))
         _log("whatsapp", sender, int((time.monotonic() - t0) * 1000))
@@ -642,7 +642,7 @@ def telegram_reply():
     try:
         detected = maybe_autodetect(text, session_id)
         answer, english = answer_in_language(text, session_id)
-        if detected:
+        if detected and detected != "english":
             answer += f'\n\n(Detected {detected.title()}. Reply "english" for English.)'
 
         if wants_voice_reply(session_id):
