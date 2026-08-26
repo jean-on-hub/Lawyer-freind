@@ -83,8 +83,36 @@ def _db():
         )
     """)
     conn.execute("CREATE TABLE IF NOT EXISTS tts_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT DEFAULT (datetime('now')))")
+    # Added after user_voice shipped, so migrate rather than assume
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(user_voice)")}
+    if "show_english" not in cols:
+        conn.execute("ALTER TABLE user_voice ADD COLUMN show_english INTEGER DEFAULT 1")
     conn.commit()
     return conn
+
+
+def get_show_english(session_id: str) -> bool:
+    """Whether translated replies carry the English original underneath."""
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT show_english FROM user_voice WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        return True if row is None or row[0] is None else bool(row[0])
+    except Exception:
+        return True  # default to showing it: a checkable answer is the safer one
+
+
+def set_show_english(session_id: str, show: bool) -> None:
+    try:
+        with _db() as conn:
+            conn.execute(
+                "INSERT INTO user_voice (session_id, show_english) VALUES (?,?) "
+                "ON CONFLICT(session_id) DO UPDATE SET show_english = excluded.show_english",
+                (session_id, int(show)),
+            )
+    except Exception:
+        pass
 
 
 def get_language(session_id: str) -> str:

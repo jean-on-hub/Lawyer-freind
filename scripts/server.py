@@ -135,6 +135,8 @@ WELCOME = (
     "VOICE NOTES — send one in English any time.\n"
     "For a Ghanaian language, send the language name first, then your voice note.\n"
     "Send \"voice\" if you want spoken replies, \"text\" to stop them.\n\n"
+    "In a Ghanaian language I also show the English underneath, so you can check it. "
+    "Send \"short\" to leave it out.\n\n"
     "Send \"new\" to start a fresh topic.\n\n"
     "Ask me your question whenever you are ready.\n\n"
     "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
@@ -206,7 +208,8 @@ def handle_language_command(text: str, session_id: str) -> str | None:
     clear_session(session_id)
     if code == "eng":
         return "Switched to English. What legal question can I help you with?"
-    confirm = f"Switched to {word.title()}. Ask your question."
+    confirm = (f"Switched to {word.title()}. Ask your question. "
+               f"(Send \"short\" to leave out the English.)")
     try:
         return ml.from_english(confirm, code)
     except Exception:
@@ -306,8 +309,11 @@ def answer_in_language(query: str, session_id: str) -> tuple[str, str]:
         body, contact = _split_contact(answer)
         translated = ml.from_english(body, lang)
         reply = f"{translated}\n\n{contact}" if contact else translated
-        # English shown alongside so a bilingual reader can catch a bad translation
-        return f"{reply}\n\n———\n(English)\n{answer}", answer
+        # English shown alongside by default so a bilingual reader can catch a bad
+        # translation; "short" turns it off per user.
+        if ml.get_show_english(session_id):
+            reply = f"{reply}\n\n———\n(English)\n{answer}"
+        return reply, answer
     except Exception:
         print("TRANSLATION ERROR:", traceback.format_exc())
         answer = answer_query(query, session_id)
@@ -337,6 +343,21 @@ def spoken_summary(answer: str) -> str:
 
 def wants_voice_reply(session_id: str) -> bool:
     return ml.get_voice_pref(session_id) == "voice" and ml.tts_budget_left()
+
+def handle_display_command(text: str, session_id: str) -> str | None:
+    """"short" drops the English half of a translated reply; "full" restores it.
+
+    Matched strictly rather than by intent — "short" is too ordinary a word to
+    risk hijacking a question like "can I sign a short lease?".
+    """
+    cleaned = text.lower().strip().lstrip("/").rstrip("?!.")
+    if cleaned in ("short", "short only", "no english"):
+        ml.set_show_english(session_id, False)
+        return "Okay — I'll reply in your language only, without the English."
+    if cleaned in ("full", "both", "with english", "long"):
+        ml.set_show_english(session_id, True)
+        return "Okay — I'll include the English underneath each answer."
+    return None
 
 def handle_voice_command(text: str, session_id: str, supports_voice: bool = True) -> str | None:
     word = _intent_word(text, ("voice", "audio", "text"))
@@ -456,6 +477,11 @@ def whatsapp_reply():
     voice_reply = handle_voice_command(incoming_msg, sender, supports_voice=False)
     if voice_reply:
         msg.body(voice_reply)
+        return str(resp)
+
+    display_reply = handle_display_command(incoming_msg, sender)
+    if display_reply:
+        msg.body(display_reply)
         return str(resp)
 
     t0 = time.monotonic()
@@ -637,6 +663,11 @@ def telegram_reply():
     voice_reply = handle_voice_command(text, session_id)
     if voice_reply:
         send_telegram_message(chat_id, voice_reply)
+        return jsonify({"ok": True})
+
+    display_reply = handle_display_command(text, session_id)
+    if display_reply:
+        send_telegram_message(chat_id, display_reply)
         return jsonify({"ok": True})
 
     try:
