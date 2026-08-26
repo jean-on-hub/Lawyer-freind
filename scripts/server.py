@@ -119,12 +119,46 @@ def _log(channel: str, user_id: str, duration_ms: int, error: bool = False, inpu
 session_store: dict[str, list] = {}
 
 RESET_TRIGGERS = {"new", "reset", "start over", "start fresh", "clear", "new topic",
-                  "new conversation", "/new", "/start", "/reset"}
+                  "new conversation", "/new", "/reset"}
 RESET_REPLY = ("Starting fresh! What legal question can I help you with?\n\n"
                "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh.")
 
+# Shown on /start, on "help", and once to every new user. The language names are
+# listed as bare words because someone who reads little English can still
+# recognise the name of their own language and send it back.
+WELCOME = (
+    "Akwaaba! I give free legal information about Ghanaian law — land, rent, work, "
+    "marriage, inheritance, police and more.\n\n"
+    "LANGUAGES — send one of these words:\n"
+    "english · twi · ga · ewe · fante · dagbani · frafra · kusaal\n"
+    "Or just write to me in your language and I will follow.\n\n"
+    "VOICE NOTES — send one in English any time.\n"
+    "For a Ghanaian language, send the language name first, then your voice note.\n"
+    "Send \"voice\" if you want spoken replies, \"text\" to stop them.\n\n"
+    "Send \"new\" to start a fresh topic.\n\n"
+    "Ask me your question whenever you are ready.\n\n"
+    "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
+)
+START_TRIGGERS = {"/start", "start", "help", "/help", "menu", "/menu", "hi", "hello"}
+
 def is_reset(text: str) -> bool:
     return text.lower().strip() in RESET_TRIGGERS
+
+def is_start(text: str) -> bool:
+    return text.lower().strip().rstrip("!.") in START_TRIGGERS
+
+def is_first_contact(channel: str, user_id: str) -> bool:
+    """True if this user has never sent a message before."""
+    user_hash = hashlib.sha256(user_id.encode()).hexdigest()[:16]
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM messages WHERE channel = ? AND user_hash = ? LIMIT 1",
+                (channel, user_hash),
+            ).fetchone()
+        return row is None
+    except Exception:
+        return False  # never greet twice by accident
 
 def clear_session(session_id: str) -> None:
     session_store.pop(session_id, None)
@@ -212,15 +246,28 @@ def detect_language(text: str) -> str | None:
         return None
 
 def maybe_autodetect(text: str, session_id: str) -> str | None:
-    """Switch language if the user is writing in one. Returns the language name."""
-    if ml.get_language(session_id) != "eng":
-        return None  # already switched; leaving is an explicit choice
-    if not looks_non_english(text) or not ml.khaya_budget_left(2):
-        return None
+    """Switch language in any direction when the user changes language mid-chat.
+
+    Someone set to Twi who then writes English — or Ewe — should be followed, not
+    left stranded. Detection is free (LLM), so the only cost is latency, which is
+    why plainly-English messages from English users skip it entirely.
+    """
+    current = ml.get_language(session_id)
+    words = re.findall(r"[a-z']+", text.lower())
+    if len(words) < 3 and not any(ch in GHANAIAN_CHARS for ch in text):
+        return None  # too short to judge; stay where we are
+    if current == "eng" and not looks_non_english(text):
+        return None  # already English and still English: nothing to do
+
     detected = detect_language(text)
-    if not detected or ml.LANGUAGES[detected] == "eng":
+    if not detected:
         return None
-    ml.set_language(session_id, ml.LANGUAGES[detected])
+    code = ml.LANGUAGES[detected]
+    if code == current:
+        return None
+    if code != "eng" and not ml.khaya_budget_left(2):
+        return None  # cannot serve that language right now
+    ml.set_language(session_id, code)
     return detected
 
 CONTACT_MARKER = "For serious matters"
@@ -387,10 +434,19 @@ def whatsapp_reply():
         msg.body("Please send a question about Ghanaian law and I'll do my best to help.")
         return str(resp)
 
+    if is_start(incoming_msg):
+        clear_session(sender)
+        msg.body(WELCOME)
+        return str(resp)
+
     if is_reset(incoming_msg):
         clear_session(sender)
         msg.body(RESET_REPLY)
         return str(resp)
+
+    if is_first_contact("whatsapp", sender):
+        msg.body(WELCOME)
+        msg = resp.message()  # answer follows as a second message
 
     lang_reply = handle_language_command(incoming_msg, sender)
     if lang_reply:
@@ -559,10 +615,19 @@ def telegram_reply():
     if not text:
         return jsonify({"ok": True})
 
+    if is_start(text):
+        clear_session(session_id)
+        send_telegram_message(chat_id, WELCOME)
+        return jsonify({"ok": True})
+
     if is_reset(text):
         clear_session(session_id)
         send_telegram_message(chat_id, RESET_REPLY)
         return jsonify({"ok": True})
+
+    # Greet a first-time user before answering, so they learn the options exist
+    if is_first_contact("telegram", str(chat_id)):
+        send_telegram_message(chat_id, WELCOME)
 
     lang_reply = handle_language_command(text, session_id)
     if lang_reply:
