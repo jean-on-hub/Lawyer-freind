@@ -2,7 +2,7 @@
 
 A free WhatsApp and Telegram chatbot that gives legal information to Ghanaians, powered by a RAG pipeline over Ghanaian legal PDFs.
 
-> **Disclaimer:** This bot provides legal *information* only, not legal advice. For serious matters, users are directed to the Legal Aid Commission of Ghana (free line: 0800-100-950).
+> **Disclaimer:** This bot provides legal *information* only, not legal advice. For serious matters, users are directed to the Legal Aid Commission of Ghana (0302 975 749 · [lac.gov.gh](https://www.lac.gov.gh)).
 
 ---
 
@@ -82,11 +82,47 @@ python scripts/bot.py
 
 ## User Commands
 
-Users can type any of the following to start a new conversation (clears history):
-
+Start a new conversation (clears history):
 ```
 new / reset / start over / new topic / clear / /new / /start
 ```
+
+Switch language (see below):
+```
+english / twi / ga / ewe / dagbani / fante / frafra
+```
+Send `language` to see the current setting.
+
+---
+
+## Voice Notes & Languages
+
+**Voice notes work in English and Ghanaian Pidgin at no cost.** Audio goes to Groq's
+Whisper (`whisper-large-v3-turbo`), which is on the same free key as the LLM —
+2,000 requests/day, and Telegram's OGG/Opus is accepted directly, so no ffmpeg is needed.
+
+**Ghanaian languages are metered.** Whisper does not support Twi, Ga, Ewe or Dagbani
+(they are excluded for >50% word error rate), so those route through
+[Ghana NLP's Khaya API](https://developer.khaya.ai) instead. Its free tier is
+**100 calls per month**:
+
+| Conversation | Khaya calls |
+|---|---|
+| English (text or voice) | **0** — entirely free |
+| Twi/Ga/Ewe text | 2 (question in, answer out) |
+| Twi/Ga/Ewe voice | 3 (transcribe + both translations) |
+
+That is roughly **50 text or 33 voice** Ghanaian-language conversations per month.
+The quota is tracked in `usage.db` and enforced before each call — when it runs out the
+bot answers in English rather than erroring. Watch the remaining budget at `/stats`.
+
+Set `KHAYA_API_KEY` in `.env` to enable; leave it unset to run English-only.
+Language is chosen explicitly by the user rather than auto-detected, because detection
+would spend a call on every message.
+
+> **Caution:** machine translation of legal information carries real risk — a
+> mistranslated word about eviction or inheritance can lead someone to act wrongly.
+> Keep answers short and always surface the Legal Aid Commission contact.
 
 ---
 

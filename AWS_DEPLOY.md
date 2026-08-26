@@ -153,7 +153,7 @@ Paste (replacing `YOUR_DOMAIN` with your actual domain):
 ```nginx
 server {
     listen 80;
-    server_name YOUR_DOMAIN;
+    server_name lawyerbot.duckdns.org;
 
     location / {
         proxy_pass         http://127.0.0.1:10000;
@@ -182,18 +182,65 @@ sudo python3 -m venv /opt/certbot/
 sudo /opt/certbot/bin/pip install --upgrade pip
 sudo /opt/certbot/bin/pip install certbot certbot-nginx
 sudo ln -s /opt/certbot/bin/certbot /usr/bin/certbot
-sudo certbot --nginx -d YOUR_DOMAIN
+sudo certbot --nginx -d lawyerbot.duckdns.org
 ```
 
-Set up auto-renewal:
+Set up auto-renewal with a systemd timer.
+
+> Do **not** use a `/etc/cron.d` entry here — Amazon Linux 2023 ships without cron installed, so it
+> silently never runs and the certificate expires after 90 days. Telegram and Twilio both reject
+> expired certificates, which takes the bot offline with no error in your own logs.
+
 ```bash
-echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && sudo certbot renew -q" | sudo tee /etc/cron.d/certbot
+sudo tee /etc/systemd/system/certbot-renew.service > /dev/null <<'EOF'
+[Unit]
+Description=Renew Let's Encrypt certificates
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx"
+EOF
+
+sudo tee /etc/systemd/system/certbot-renew.timer > /dev/null <<'EOF'
+[Unit]
+Description=Run certbot renew twice daily
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now certbot-renew.timer
+```
+
+Confirm the timer is scheduled (should show a NEXT run time):
+```bash
+sudo systemctl list-timers certbot-renew.timer
 ```
 
 Verify HTTPS works:
 ```bash
-curl https://YOUR_DOMAIN/health
+curl https://lawyerbot.duckdns.org/health
 # Expected: {"status": "ok"}
+```
+
+### If the certificate ever expires
+
+Symptom: the bot stops receiving messages but `/health` still works locally on the instance.
+Check what Telegram sees:
+```bash
+curl "https://api.telegram.org/bot<YOUR_TOKEN>/getWebhookInfo"
+# "SSL error ... certificate verify failed" means the cert expired
+```
+Fix:
+```bash
+sudo certbot renew --force-renewal
+sudo systemctl reload nginx
 ```
 
 ---
@@ -202,13 +249,13 @@ curl https://YOUR_DOMAIN/health
 
 ### Twilio (WhatsApp)
 1. Go to Twilio Console → Messaging → Try it out → Send a WhatsApp message
-2. Set the webhook URL to: `https://YOUR_DOMAIN/whatsapp`
+2. Set the webhook URL to: `https://lawyerbot.duckdns.org/whatsapp`
 3. Method: `HTTP POST`
 
 ### Telegram
 Register the webhook (run once from your local machine or EC2):
 ```bash
-curl "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/setWebhook?url=https://YOUR_DOMAIN/telegram"
+curl "https://api.telegram.org/bot8948555878:AAHUGYrlLbUGybEFB_sahyBX13OYnx_y_xU/setWebhook?url=https://lawyerbot.duckdns.org/telegram"
 ```
 
 ---

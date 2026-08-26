@@ -14,6 +14,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
+import multilingual as ml
+
 # ---- Config ----
 VECTOR_STORE_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_vectors")
 EMBED_MODEL = "all-MiniLM-L6-v2"  # lightweight — fits in cloud free-tier RAM
@@ -26,17 +28,23 @@ retriever = db.as_retriever(search_kwargs={"k": 5})
 # ---- Load LLM: Groq in cloud, Ollama locally ----
 groq_api_key = os.environ.get("GROQ_API_KEY")
 
+# Model is env-overridable: Groq retires models periodically, and when that happens
+# every request fails with a 404. Swapping GROQ_MODEL in .env is then a restart, not a deploy.
+# Check available models: curl -H "Authorization: Bearer $GROQ_API_KEY" \
+#   https://api.groq.com/openai/v1/models
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+
 if groq_api_key:
     from langchain_groq import ChatGroq
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model=GROQ_MODEL,
         temperature=0.2,
         api_key=groq_api_key,
     )
-    print("Using Groq (cloud)")
+    print(f"Using Groq (cloud) — model: {GROQ_MODEL}")
 else:
     from langchain_community.llms import Ollama
-    llm = Ollama(model="gemma4", temperature=0.2)
+    llm = Ollama(model=os.environ.get("OLLAMA_MODEL", "gemma4"), temperature=0.2)
     print("Using Ollama (local)")
 
 # ---- Prompt ----
@@ -48,7 +56,7 @@ IMPORTANT RULES:
 2. When you do answer, be direct and specific — no bullet-point encyclopaedias. 2–4 short paragraphs max.
 3. Plain language only. No legal jargon.
 4. Use the context below. If it only partly covers the topic, answer what you can and say what's unclear.
-5. End every answer with: "For serious matters, call the Legal Aid Commission free: 0800-100-950."
+5. End every answer with: "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
 
 Examples of good clarifying questions:
 - "Are you buying or selling the land?"
@@ -101,13 +109,68 @@ session_store: dict[str, list] = {}
 RESET_TRIGGERS = {"new", "reset", "start over", "start fresh", "clear", "new topic",
                   "new conversation", "/new", "/start", "/reset"}
 RESET_REPLY = ("Starting fresh! What legal question can I help you with?\n\n"
-               "For serious matters, call the Legal Aid Commission free: 0800-100-950.")
+               "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh.")
 
 def is_reset(text: str) -> bool:
     return text.lower().strip() in RESET_TRIGGERS
 
 def clear_session(session_id: str) -> None:
     session_store.pop(session_id, None)
+
+# ---- Language selection ----
+# Chosen explicitly rather than auto-detected: detection would burn a Khaya call
+# on every message, and the free tier only allows 100 calls a month.
+LANGUAGE_HELP = ("Reply with a language to switch: english, twi, ga, ewe, dagbani, fante, frafra.\n"
+                 "You can also send a voice note in English.")
+
+def handle_language_command(text: str, session_id: str) -> str | None:
+    """Returns a confirmation if the message selects a language, else None."""
+    word = text.lower().strip().lstrip("/")
+    if word in ("language", "lang", "languages"):
+        current = ml.LANGUAGE_NAMES.get(ml.get_language(session_id), "english")
+        return f"You are using {current}.\n\n{LANGUAGE_HELP}"
+    if word not in ml.LANGUAGES:
+        return None
+
+    code = ml.LANGUAGES[word]
+    if code != "en":
+        if not ml.KHAYA_API_KEY:
+            return ("Ghanaian languages aren't switched on yet — I can help in English for now. "
+                    "You can send a voice note in English if that's easier.")
+        if not ml.khaya_budget_left(2):
+            return ("Sorry, this month's free quota for Ghanaian languages is used up. "
+                    "I can still help in English — just ask your question.")
+    ml.set_language(session_id, code)
+    clear_session(session_id)
+    if code == "en":
+        return "Switched to English. What legal question can I help you with?"
+    confirm = f"Switched to {word.title()}. Ask your question."
+    try:
+        return ml.from_english(confirm, code)
+    except Exception:
+        return confirm
+
+def answer_in_language(query: str, session_id: str) -> str:
+    """Run the English RAG pipeline, translating in and out when needed.
+
+    Falls back to English rather than failing if Khaya errors or the quota is
+    spent — a slightly wrong language beats no answer at all.
+    """
+    lang = ml.get_language(session_id)
+    if lang == "en":
+        return answer_query(query, session_id)
+
+    if not ml.khaya_budget_left(2):
+        answer = answer_query(query, session_id)
+        return answer + "\n\n(Ghanaian-language quota for this month is used up, so this reply is in English.)"
+
+    try:
+        english_q = ml.to_english(query, lang)
+        answer = answer_query(english_q, session_id)
+        return ml.from_english(answer, lang)
+    except Exception:
+        print("TRANSLATION ERROR:", traceback.format_exc())
+        return answer_query(query, session_id)
 
 def answer_query(query: str, session_id: str) -> str:
     history = session_store.get(session_id, [])
@@ -133,6 +196,19 @@ def answer_query(query: str, session_id: str) -> str:
 
     return answer
 
+# ---- Voice ----
+VOICE_FAILED = ("I couldn't understand that voice note. Please try again, "
+                "or type your question.")
+
+def transcribe_voice(audio: bytes, session_id: str, filename: str) -> str:
+    """English voice is free (Whisper); Ghanaian languages are metered (Khaya)."""
+    lang = ml.get_language(session_id)
+    if lang == "en" or not ml.khaya_budget_left(3):
+        # Whisper is English-only. For a non-English user with no quota left it is
+        # still the better attempt than nothing, since many users code-switch.
+        return ml.transcribe_english(audio, filename)
+    return ml.khaya_transcribe(audio, lang)
+
 # ---- Flask App ----
 app = Flask(__name__)
 
@@ -143,6 +219,26 @@ def whatsapp_reply():
     resp = MessagingResponse()
     msg = resp.message()
 
+    # Voice note: Twilio sends media as a URL that needs account credentials
+    if request.form.get("NumMedia", "0") != "0" and not incoming_msg:
+        media_url = request.form.get("MediaUrl0", "")
+        content_type = request.form.get("MediaContentType0", "")
+        if media_url and content_type.startswith("audio"):
+            try:
+                audio = requests.get(
+                    media_url,
+                    auth=(os.environ.get("TWILIO_ACCOUNT_SID", ""), os.environ.get("TWILIO_AUTH_TOKEN", "")),
+                    timeout=30,
+                ).content
+                incoming_msg = transcribe_voice(audio, sender, "voice.ogg")
+            except Exception:
+                print("VOICE ERROR:", traceback.format_exc())
+                msg.body(VOICE_FAILED)
+                return str(resp)
+        if not incoming_msg:
+            msg.body(VOICE_FAILED)
+            return str(resp)
+
     if not incoming_msg:
         msg.body("Please send a question about Ghanaian law and I'll do my best to help.")
         return str(resp)
@@ -152,15 +248,20 @@ def whatsapp_reply():
         msg.body(RESET_REPLY)
         return str(resp)
 
+    lang_reply = handle_language_command(incoming_msg, sender)
+    if lang_reply:
+        msg.body(lang_reply)
+        return str(resp)
+
     t0 = time.monotonic()
     try:
-        answer = _clean_whatsapp(answer_query(incoming_msg, sender))
+        answer = _clean_whatsapp(answer_in_language(incoming_msg, sender))
         msg.body(answer)
         _log("whatsapp", sender, int((time.monotonic() - t0) * 1000))
     except Exception:
         print("ERROR:", traceback.format_exc())
         _log("whatsapp", sender, int((time.monotonic() - t0) * 1000), error=True)
-        msg.body("Sorry, something went wrong. Please try again or contact the Legal Aid Commission of Ghana at 0800-100-950.")
+        msg.body("Sorry, something went wrong. Please try again, or contact the Legal Aid Commission on 0302 975 749 (lac.gov.gh).")
 
     return str(resp)
 
@@ -189,9 +290,16 @@ def stats():
             ORDER BY date DESC
             LIMIT 30
         """).fetchall()
+    used = ml.khaya_calls_this_month()
     return jsonify({
         "totals": [dict(zip(["channel","messages","unique_users","errors","avg_ms"], r)) for r in totals],
         "last_30_days": [dict(zip(["date","channel","messages"], r)) for r in daily],
+        "khaya_quota": {
+            "used_this_month": used,
+            "monthly_quota": ml.KHAYA_MONTHLY_QUOTA,
+            "remaining": max(0, ml.KHAYA_MONTHLY_QUOTA - used),
+            "enabled": bool(ml.KHAYA_API_KEY),
+        },
     })
 
 
@@ -221,6 +329,16 @@ def _to_telegram_html(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
+def download_telegram_file(file_id: str) -> bytes:
+    meta = requests.get(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
+        params={"file_id": file_id}, timeout=15,
+    ).json()
+    path = meta["result"]["file_path"]
+    r = requests.get(f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{path}", timeout=60)
+    r.raise_for_status()
+    return r.content
+
 def send_telegram_message(chat_id: int, text: str) -> None:
     if not TELEGRAM_BOT_TOKEN:
         return
@@ -237,25 +355,45 @@ def telegram_reply():
         return jsonify({"ok": True})
 
     chat_id = message["chat"]["id"]
+    session_id = f"tg_{chat_id}"
     text = message.get("text", "").strip()
+
+    # Voice note or forwarded audio: Telegram gives a file_id to resolve first
+    voice = message.get("voice") or message.get("audio")
+    if not text and voice:
+        try:
+            audio = download_telegram_file(voice["file_id"])
+            text = transcribe_voice(audio, session_id, "voice.ogg")
+        except Exception:
+            print("VOICE ERROR:", traceback.format_exc())
+            send_telegram_message(chat_id, VOICE_FAILED)
+            return jsonify({"ok": True})
+        if not text:
+            send_telegram_message(chat_id, VOICE_FAILED)
+            return jsonify({"ok": True})
 
     if not text:
         return jsonify({"ok": True})
 
     if is_reset(text):
-        clear_session(f"tg_{chat_id}")
+        clear_session(session_id)
         send_telegram_message(chat_id, RESET_REPLY)
+        return jsonify({"ok": True})
+
+    lang_reply = handle_language_command(text, session_id)
+    if lang_reply:
+        send_telegram_message(chat_id, lang_reply)
         return jsonify({"ok": True})
 
     t0 = time.monotonic()
     try:
-        answer = answer_query(text, session_id=f"tg_{chat_id}")
+        answer = answer_in_language(text, session_id)
         send_telegram_message(chat_id, answer)
         _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000))
     except Exception:
         print("TELEGRAM ERROR:", traceback.format_exc())
         _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000), error=True)
-        send_telegram_message(chat_id, "Sorry, something went wrong. Please try again or call the Legal Aid Commission: 0800-100-950.")
+        send_telegram_message(chat_id, "Sorry, something went wrong. Please try again, or call the Legal Aid Commission on 0302 975 749 (lac.gov.gh).")
 
     return jsonify({"ok": True})
 

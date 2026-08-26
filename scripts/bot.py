@@ -31,7 +31,7 @@ Only say you have no information if the context is completely unrelated to the q
 Rules:
 - Plain language only — no legal jargon
 - Keep answers concise and practical
-- Always end with: "For serious matters, consult a Ghanaian lawyer or call the Legal Aid Commission free line: 0800-100-950."
+- Always end with: "For serious matters, consult a Ghanaian lawyer or call the Legal Aid Commission on 0302 975 749 (lac.gov.gh)."
 
 Context: {context}"""),
     MessagesPlaceholder("chat_history"),
