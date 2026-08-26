@@ -332,8 +332,13 @@ def answer_query(query: str, session_id: str) -> str:
     return answer
 
 # ---- Voice ----
-VOICE_FAILED = ("I couldn't understand that voice note. Please try again, "
-                "or type your question.")
+# Whisper only knows English, so a Twi or Ewe voice note transcribes to nothing.
+# The user cannot know that, so say what actually fixes it.
+VOICE_FAILED = ("I couldn't understand that voice note.\n\n"
+                "If you spoke Twi, Ga, Ewe, Fante, Dagbani, Frafra or Kusaal, "
+                "first send me the name of the language (for example: ewe), "
+                "then send your voice note again.\n\n"
+                "You can also type your question instead.")
 
 def transcribe_voice(audio: bytes, session_id: str, filename: str) -> str:
     """English voice is free (Whisper); Ghanaian languages are metered (Khaya)."""
@@ -370,9 +375,11 @@ def whatsapp_reply():
                 incoming_msg = transcribe_voice(audio, sender, "voice.ogg")
             except Exception:
                 print("VOICE ERROR:", traceback.format_exc())
+                _log("whatsapp", sender, 0, error=True, input_type="voice")
                 msg.body(VOICE_FAILED)
                 return str(resp)
         if not incoming_msg:
+            _log("whatsapp", sender, 0, error=True, input_type="voice")
             msg.body(VOICE_FAILED)
             return str(resp)
 
@@ -538,9 +545,14 @@ def telegram_reply():
             text = transcribe_voice(audio, session_id, "voice.ogg")
         except Exception:
             print("VOICE ERROR:", traceback.format_exc())
+            _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000),
+                 error=True, input_type="voice")
             send_telegram_message(chat_id, VOICE_FAILED)
             return jsonify({"ok": True})
         if not text:
+            # Empty transcription: almost always a non-English voice note
+            _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000),
+                 error=True, input_type="voice")
             send_telegram_message(chat_id, VOICE_FAILED)
             return jsonify({"ok": True})
 
