@@ -640,9 +640,13 @@ def stats():
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 def _clean_whatsapp(text: str) -> str:
-    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)                     # **bold** → *bold*
-    text = re.sub(r'__(.+?)__', r'*\1*', text)                          # __bold__ → *bold*
+    # Bold is parked on a sentinel first: converting **bold** straight to *bold*
+    # would let the italic rule below match those same asterisks and silently
+    # downgrade every bold phrase to italic.
+    text = re.sub(r'\*\*(.+?)\*\*|__(.+?)__',
+                  lambda m: f"\x00{m.group(1) or m.group(2)}\x00", text)
     text = re.sub(r'\*([^*\n]+)\*', r'_\1_', text)                      # *italic* → _italic_
+    text = text.replace("\x00", "*")                                    # sentinel → WhatsApp bold
     text = re.sub(r'~~(.+?)~~', r'~\1~', text)                          # ~~strike~~ → ~strike~
     text = re.sub(r'`{3}[^\n]*\n?(.*?)`{3}', r'```\1```', text, flags=re.DOTALL)
     text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)  # ## Header → *bold*
