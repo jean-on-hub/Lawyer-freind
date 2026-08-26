@@ -102,7 +102,11 @@ IMPORTANT RULES:
 2. When you do answer, be direct and specific — no bullet-point encyclopaedias. 2–4 short paragraphs max.
 3. Plain language only. No legal jargon.
 4. Use the context below. If it only partly covers the topic, answer what you can and say what's unclear.
-5. End every answer with: "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
+5. Name the law you used, as it appears in [square brackets] above the context —
+   for example "Under the Rent Act, 1963...". Cite ONLY names shown in brackets.
+   Never invent an Act, a section number or a year. If the context has no law that
+   fits the question, say so plainly instead of citing something close.
+6. End every answer with: "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
 
 Examples of good clarifying questions:
 - "Are you buying or selling the land?"
@@ -122,8 +126,23 @@ Context: {context}"""),
     ("human", "{input}"),
 ])
 
+def _source_name(doc) -> str:
+    """Readable law name from a chunk's filename, for citation."""
+    raw = doc.metadata.get("source") or ""
+    name = os.path.splitext(os.path.basename(raw))[0]
+    name = re.sub(r"^[0-9a-f]{6,}_", "", name)       # dedupe prefix from harvesting
+    name = re.sub(r"_+", " ", name).strip()
+    return re.sub(r"\s{2,}", " ", name)
+
 def _format_docs(inputs: dict) -> dict:
-    inputs["context"] = "\n\n".join(doc.page_content for doc in inputs["context"])
+    # Each chunk is labelled so the model can cite the law it actually used.
+    # Without this the answer is an unverifiable assertion: a user cannot check a
+    # section that may since have been amended, and cannot spot a mistranslation.
+    parts = []
+    for doc in inputs["context"]:
+        label = _source_name(doc)
+        parts.append(f"[{label}]\n{doc.page_content}" if label else doc.page_content)
+    inputs["context"] = "\n\n".join(parts)
     return inputs
 
 docs_chain = RunnablePassthrough.assign() | _format_docs | qa_prompt | llm | StrOutputParser()
