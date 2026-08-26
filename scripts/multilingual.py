@@ -28,7 +28,8 @@ KHAYA_MONTHLY_QUOTA = int(os.environ.get("KHAYA_MONTHLY_QUOTA", "100"))
 # Orpheus TTS. English only, ~100 free requests, and it rejects input over 200
 # characters — so we speak a short summary and send the full answer as text.
 TTS_MODEL = os.environ.get("TTS_MODEL", "canopylabs/orpheus-v1-english")
-TTS_VOICE = os.environ.get("TTS_VOICE", "Hannah")
+# Voice names must be lowercase; the docs list them capitalised but the API rejects that.
+TTS_VOICE = os.environ.get("TTS_VOICE", "hannah").lower()
 TTS_MONTHLY_QUOTA = int(os.environ.get("TTS_MONTHLY_QUOTA", "100"))
 TTS_MAX_CHARS = 200
 TTS_ENABLED = os.environ.get("TTS_ENABLED", "true").lower() not in ("false", "0", "no")
