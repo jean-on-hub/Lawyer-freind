@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 usage.db
+
+# Harvested source PDFs stay local — only the vector index is deployed.
+# These run to hundreds of MB and would bloat the repo for no benefit.
+Legal_documents/crawled/
+Legal_documents/repository/
