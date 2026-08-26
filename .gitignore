@@ -8,3 +8,4 @@ usage.db
 # These run to hundreds of MB and would bloat the repo for no benefit.
 Legal_documents/crawled/
 Legal_documents/repository/
+ghana_law_lancedb/

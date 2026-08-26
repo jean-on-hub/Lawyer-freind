@@ -11,6 +11,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.documents import Document
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
@@ -18,12 +19,57 @@ import multilingual as ml
 
 # ---- Config ----
 VECTOR_STORE_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_vectors")
+LANCEDB_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_lancedb")
 EMBED_MODEL = "all-MiniLM-L6-v2"  # lightweight — fits in cloud free-tier RAM
+RETRIEVE_K = int(os.environ.get("RETRIEVE_K", "5"))
 
-# ---- Load FAISS ----
 embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
-db = FAISS.load_local(VECTOR_STORE_FOLDER, embedder, allow_dangerous_deserialization=True)
-retriever = db.as_retriever(search_kwargs={"k": 5})
+
+
+class LanceRetriever:
+    """Disk-backed retrieval.
+
+    FAISS loads the entire index into RAM, which caps the corpus at whatever fits
+    in the server's 916 MB. LanceDB searches from disk instead, so the corpus is
+    limited by the free tier's spare disk rather than by memory.
+
+    Written against lancedb directly rather than the LangChain wrapper, whose
+    constructor signature has changed between releases.
+    """
+
+    def __init__(self, folder: str, table_name: str = "ghana_law", k: int = 5):
+        import lancedb
+        self.table = lancedb.connect(folder).open_table(table_name)
+        self.k = k
+
+    def invoke(self, query: str):
+        rows = self.table.search(embedder.embed_query(query)).limit(self.k).to_list()
+        return [
+            Document(page_content=r.get("text", ""),
+                     metadata={"source": r.get("source", ""), "page": r.get("page", 0)})
+            for r in rows
+        ]
+
+
+def _load_retriever():
+    """Prefer the disk-backed index, but never fail to start because of it.
+
+    Docker creates an empty directory when a bind mount source is missing, so the
+    folder existing proves nothing — the table has to open before we trust it.
+    """
+    try:
+        r = LanceRetriever(LANCEDB_FOLDER, k=RETRIEVE_K)
+        print(f"Using LanceDB (disk) — {r.table.count_rows():,} chunks")
+        return r
+    except Exception as e:
+        print(f"LanceDB unavailable ({str(e)[:80]}); falling back to FAISS")
+
+    db = FAISS.load_local(VECTOR_STORE_FOLDER, embedder, allow_dangerous_deserialization=True)
+    print("Using FAISS (memory)")
+    return db.as_retriever(search_kwargs={"k": RETRIEVE_K})
+
+
+retriever = _load_retriever()
 
 # ---- Load LLM: Groq in cloud, Ollama locally ----
 groq_api_key = os.environ.get("GROQ_API_KEY")

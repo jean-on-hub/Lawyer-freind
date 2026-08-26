@@ -3,6 +3,7 @@ langchain-community>=0.3.24
 langchain-core>=0.3.59
 langchain-groq>=0.3.2
 faiss-cpu==1.13.2
+lancedb>=0.24.0
 sentence-transformers==3.4.1
 tqdm
 ollama

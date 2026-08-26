@@ -10,3 +10,7 @@ services:
       - PORT=10000
     volumes:
       - ./usage.db:/app/usage.db
+      # The vector index is too large for git, so it is copied to the server with
+      # scp and mounted here. When the directory is absent the app falls back to
+      # the smaller FAISS index that does travel in the repo.
+      - ./ghana_law_lancedb:/app/ghana_law_lancedb:ro
