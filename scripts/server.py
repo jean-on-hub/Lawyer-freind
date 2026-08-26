@@ -26,6 +26,10 @@ RETRIEVE_K = int(os.environ.get("RETRIEVE_K", "5"))
 
 embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
 
+# "Order 1 rule 1", "section 12", "article 33" — the numbers users actually cite.
+# Single-quote stripping matters: the number goes into a SQL LIKE clause.
+CITATION_RE = re.compile(r"\b(order|section|article|rule|s|art)\.?\s*(\d{1,3})\b", re.I)
+
 
 class LanceRetriever:
     """Disk-backed retrieval.
@@ -43,12 +47,61 @@ class LanceRetriever:
         self.table = lancedb.connect(folder).open_table(table_name)
         self.k = k
 
+    def _citation_hits(self, query: str) -> list[dict]:
+        """Literal lookup for a cited provision.
+
+        Vector search cannot tell "Order 1 rule 1" from "Order 32 rule 1": the two
+        mean nearly the same thing, and the number that distinguishes them is
+        exactly what an embedding discards. Anyone quoting a citation therefore
+        gets semantically similar but wrong provisions, so cited numbers are
+        matched literally instead.
+        """
+        wanted, by_text = [], {}
+        for label, num in CITATION_RE.findall(query):
+            word = {"order": "ORDER", "section": "Section", "article": "Article",
+                    "rule": "Rule", "s": "Section", "art": "Article"}.get(label.lower())
+            if word:
+                wanted.append((word, num))
+
+        for word, num in wanted:
+            try:
+                # Broad SQL prefilter (num is digits only, so safe to interpolate),
+                # then an exact check so "Order 1" is not satisfied by "Order 10".
+                candidates = (self.table.search()
+                              .where(f"text LIKE '%{word} {num}%'")
+                              .limit(200).to_list())
+            except Exception:
+                continue
+            exact = re.compile(rf"\b{word}\s*{num}\b[^0-9]", re.I)
+            for r in candidates:
+                if exact.search(r.get("text", "")):
+                    by_text.setdefault(r.get("text", ""), r)
+
+        # A chunk matching every cited number — "Order 1" *and* "Rule 1" — is the
+        # provision itself; one matching a single number is usually a stray
+        # cross-reference or a table of contents.
+        def score(row):
+            text = row.get("text", "")
+            hits = sum(bool(re.search(rf"\b{w}\s*{n}\b[^0-9]", text, re.I)) for w, n in wanted)
+            # "ORDER 1—Preliminary Matters" is the provision; "(see Order 1)" in a
+            # forms list is a cross-reference. The heading dash tells them apart.
+            heading = sum(bool(re.search(rf"\b{w}\s*{n}\s*[—–-]", text, re.I)) for w, n in wanted)
+            return hits * 2 + heading
+
+        return sorted(by_text.values(), key=score, reverse=True)
+
     def invoke(self, query: str):
-        rows = self.table.search(embedder.embed_query(query)).limit(self.k).to_list()
+        rows = self._citation_hits(query)[: self.k]
+        seen = {r.get("text", "")[:120] for r in rows}
+        for r in self.table.search(embedder.embed_query(query)).limit(self.k).to_list():
+            key = r.get("text", "")[:120]
+            if key not in seen:
+                seen.add(key)
+                rows.append(r)
         return [
             Document(page_content=r.get("text", ""),
                      metadata={"source": r.get("source", ""), "page": r.get("page", 0)})
-            for r in rows
+            for r in rows[: self.k * 2]
         ]
 
 
