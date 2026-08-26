@@ -63,6 +63,13 @@ Examples of good clarifying questions:
 - "Is this about a marriage, divorce, or inheritance?"
 - "Who currently owns the land — an individual, a family, or a stool?"
 
+ABOUT YOU — if the user asks what you can do, or asks for another language or for
+voice, do not say you cannot. Tell them the exact word to send:
+- Languages: they send just the word "twi", "ga", "ewe", "dagbani", "fante", "frafra" or "english"
+- Voice replies: they send just the word "voice" (and "text" to go back)
+- They can send you a voice note in English and you will understand it
+- To start a new topic they send "new"
+
 Context: {context}"""),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
@@ -127,13 +134,29 @@ def clear_session(session_id: str) -> None:
 LANGUAGE_HELP = ("Reply with a language to switch: english, twi, ga, ewe, dagbani, fante, frafra.\n"
                  "You can also send a voice note in English.")
 
+# Users write "can you speak twi?" far more often than a bare "twi", so short
+# messages are matched on intent too. Legal questions that merely mention a
+# language or the word voice are excluded by LEGAL_CONTEXT.
+LEGAL_CONTEXT = re.compile(r"\b(law|legal|court|right|rights|act|land|rent|divorce|"
+                           r"marriage|police|arrest|contract|will|inherit\w*)\b", re.I)
+
+def _intent_word(text: str, options) -> str | None:
+    """Match a bare command, or a short phrase asking for one of `options`."""
+    cleaned = text.lower().strip().lstrip("/").rstrip("?!.")
+    if cleaned in options:
+        return cleaned
+    words = re.findall(r"[a-z]+", cleaned)
+    if len(words) > 6 or LEGAL_CONTEXT.search(cleaned):
+        return None
+    return next((w for w in words if w in options), None)
+
 def handle_language_command(text: str, session_id: str) -> str | None:
     """Returns a confirmation if the message selects a language, else None."""
-    word = text.lower().strip().lstrip("/")
-    if word in ("language", "lang", "languages"):
+    if text.lower().strip().lstrip("/").rstrip("?") in ("language", "lang", "languages"):
         current = ml.LANGUAGE_NAMES.get(ml.get_language(session_id), "english")
         return f"You are using {current}.\n\n{LANGUAGE_HELP}"
-    if word not in ml.LANGUAGES:
+    word = _intent_word(text, ml.LANGUAGES)
+    if not word:
         return None
 
     code = ml.LANGUAGES[word]
@@ -210,9 +233,11 @@ def wants_voice_reply(session_id: str) -> bool:
     return ml.get_voice_pref(session_id) == "voice" and ml.tts_budget_left()
 
 def handle_voice_command(text: str, session_id: str, supports_voice: bool = True) -> str | None:
-    word = text.lower().strip().lstrip("/")
-    if word not in ("voice", "text"):
+    word = _intent_word(text, ("voice", "audio", "text"))
+    if not word:
         return None
+    if word == "audio":
+        word = "voice"
     if word == "text":
         ml.set_voice_pref(session_id, "text")
         return "Okay — text replies only."
