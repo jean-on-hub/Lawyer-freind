@@ -123,31 +123,45 @@ RESET_TRIGGERS = {"new", "reset", "start over", "start fresh", "clear", "new top
 RESET_REPLY = ("Starting fresh! What legal question can I help you with?\n\n"
                "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh.")
 
-# Shown on /start, on "help", and once to every new user. The language names are
-# listed as bare words because someone who reads little English can still
-# recognise the name of their own language and send it back.
+# Language names are listed as bare words because someone who reads little English
+# can still recognise the name of their own language and send it back.
+# Kept deliberately short. The rest is taught at the moment it becomes relevant —
+# how to drop the English when they switch language, how to get spoken replies
+# after they send a voice note — because a wall of options at first contact is
+# read by nobody. "help" gives the full list for anyone who wants it.
 WELCOME = (
     "Akwaaba! I give free legal information about Ghanaian law — land, rent, work, "
     "marriage, inheritance, police and more.\n\n"
-    "LANGUAGES — send one of these words:\n"
-    "english · twi · ga · ewe · fante · dagbani · frafra · kusaal\n"
-    "Or just write to me in your language and I will follow.\n\n"
-    "VOICE NOTES — send one in English any time.\n"
-    "For a Ghanaian language, send the language name first, then your voice note.\n"
-    "Send \"voice\" if you want spoken replies, \"text\" to stop them.\n\n"
-    "In a Ghanaian language I also show the English underneath, so you can check it. "
-    "Send \"short\" to leave it out.\n\n"
-    "Send \"new\" to start a fresh topic.\n\n"
-    "Ask me your question whenever you are ready.\n\n"
+    "Write or send a voice note. You can use your own language:\n"
+    "english · twi · ga · ewe · fante · dagbani · frafra · kusaal\n\n"
+    "Ask me your question.\n\n"
     "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
 )
-START_TRIGGERS = {"/start", "start", "help", "/help", "menu", "/menu", "hi", "hello"}
+
+HELP_TEXT = (
+    "What I can do:\n\n"
+    "LANGUAGES — send the name of a language, or just write in it:\n"
+    "english · twi · ga · ewe · fante · dagbani · frafra · kusaal · yoruba\n\n"
+    "VOICE NOTES — send one in English any time. For a Ghanaian language, send the "
+    "language name first, then your voice note.\n\n"
+    "SPOKEN REPLIES — send \"voice\" for a spoken answer, \"text\" to stop. "
+    "Spoken replies are in English only.\n\n"
+    "SHORTER REPLIES — in a Ghanaian language I add the English underneath so you "
+    "can check it. Send \"short\" to leave it out, \"full\" to bring it back.\n\n"
+    "NEW TOPIC — send \"new\".\n\n"
+    "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
+)
+START_TRIGGERS = {"/start", "start", "hi", "hello"}
+HELP_TRIGGERS = {"help", "/help", "menu", "/menu", "options", "commands"}
 
 def is_reset(text: str) -> bool:
     return text.lower().strip() in RESET_TRIGGERS
 
 def is_start(text: str) -> bool:
     return text.lower().strip().rstrip("!.") in START_TRIGGERS
+
+def is_help(text: str) -> bool:
+    return text.lower().strip().rstrip("!.?") in HELP_TRIGGERS
 
 def is_first_contact(channel: str, user_id: str) -> bool:
     """True if this user has never sent a message before."""
@@ -208,12 +222,13 @@ def handle_language_command(text: str, session_id: str) -> str | None:
     clear_session(session_id)
     if code == "eng":
         return "Switched to English. What legal question can I help you with?"
-    confirm = (f"Switched to {word.title()}. Ask your question. "
-               f"(Send \"short\" to leave out the English.)")
+    confirm = f"Switched to {word.title()}. Ask your question."
     try:
-        return ml.from_english(confirm, code)
+        confirm = ml.from_english(confirm, code)
     except Exception:
-        return confirm
+        pass
+    # Appended after translation so the command word stays literal
+    return confirm + '\n\n(English shown below each answer — send "short" to hide it.)'
 
 # ---- Automatic language detection ----
 # Someone who only speaks Twi cannot read "reply with the word twi", so relying on
@@ -373,7 +388,10 @@ def handle_voice_command(text: str, session_id: str, supports_voice: bool = True
     if not ml.tts_budget_left():
         return "Voice replies aren't available right now. I'll keep replying with text."
     ml.set_voice_pref(session_id, "voice")
-    return "Okay — I'll send a short voice note with each answer, plus the full text."
+    reply = "Okay — I'll send a short voice note with each answer, plus the full text."
+    if ml.get_language(session_id) != "eng":
+        reply += " The spoken part is in English only."
+    return reply
 
 def answer_query(query: str, session_id: str) -> str:
     history = session_store.get(session_id, [])
@@ -453,6 +471,10 @@ def whatsapp_reply():
 
     if not incoming_msg:
         msg.body("Please send a question about Ghanaian law and I'll do my best to help.")
+        return str(resp)
+
+    if is_help(incoming_msg):
+        msg.body(HELP_TEXT)
         return str(resp)
 
     if is_start(incoming_msg):
@@ -639,6 +661,10 @@ def telegram_reply():
             return jsonify({"ok": True})
 
     if not text:
+        return jsonify({"ok": True})
+
+    if is_help(text):
+        send_telegram_message(chat_id, HELP_TEXT)
         return jsonify({"ok": True})
 
     if is_start(text):
