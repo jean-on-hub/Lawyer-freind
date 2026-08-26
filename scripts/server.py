@@ -29,6 +29,11 @@ embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
 # "Order 1 rule 1", "section 12", "article 33" — the numbers users actually cite.
 # Single-quote stripping matters: the number goes into a SQL LIKE clause.
 CITATION_RE = re.compile(r"\b(order|section|article|rule|s|art)\.?\s*(\d{1,3})\b", re.I)
+# Ghanaians cite laws by number as often as by name: "Act 992", "PNDCL 111",
+# "C.I. 47", "L.I. 1234", "NRCD 175". These live in the file name as well as the
+# text, so both are searched.
+ACT_NUMBER_RE = re.compile(r"\b(act|pndcl|c\.?\s?i\.?|l\.?\s?i\.?|nrcd|smcd|nlcd)\s*\.?\s*(\d{1,4})\b", re.I)
+BILL_RE = re.compile(r"\bbill\b", re.I)
 
 
 class LanceRetriever:
@@ -88,14 +93,32 @@ class LanceRetriever:
             heading = sum(bool(re.search(rf"\b{w}\s*{n}\s*[—–-]", text, re.I)) for w, n in wanted)
             return hits * 2 + heading
 
+        for label, num in ACT_NUMBER_RE.findall(query):
+            tag = re.sub(r"[^A-Za-z]", "", label).upper()
+            for column in ("source", "text"):
+                try:
+                    hits = (self.table.search()
+                            .where(f"{column} LIKE '%{tag} {num}%' OR {column} LIKE '%{tag}{num}%'")
+                            .limit(50).to_list())
+                except Exception:
+                    continue
+                for r in hits:
+                    by_text.setdefault(r.get("text", ""), r)
+
         return sorted(by_text.values(), key=score, reverse=True)
 
     def invoke(self, query: str):
         rows = self._citation_hits(query)[: self.k]
         seen = {r.get("text", "")[:120] for r in rows}
-        for r in self.table.search(embedder.embed_query(query)).limit(self.k).to_list():
+        # Over-fetch, then put enacted law ahead of Bills. 43% of the corpus is
+        # Bills, and they were outranking the Acts they were meant to replace —
+        # answering a tenancy question from the Rent Bill 2023 states proposed
+        # rules as if they were in force.
+        semantic = self.table.search(embedder.embed_query(query)).limit(self.k * 3).to_list()
+        semantic.sort(key=lambda r: bool(BILL_RE.search(r.get("source", ""))))
+        for r in semantic:
             key = r.get("text", "")[:120]
-            if key not in seen:
+            if key not in seen and len(rows) < self.k * 2:
                 seen.add(key)
                 rows.append(r)
         return [
@@ -164,7 +187,10 @@ IMPORTANT RULES:
 6. If the context carries a NOTE saying a law was amended, you MUST tell the user
    the law has changed since then and name the amending law. Say plainly that your
    answer describes the original text. Never present amended law as current.
-7. End every answer with: "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
+7. If a source is marked "A BILL", it is only proposed law. Do not state it as the
+   current rule. Prefer an Act that answers the question; if only a Bill covers it,
+   say clearly that it is proposed and may not be in force.
+8. End every answer with: "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
 
 Examples of good clarifying questions:
 - "Are you buying or selling the land?"
@@ -185,12 +211,20 @@ Context: {context}"""),
 ])
 
 def _source_name(doc) -> str:
-    """Readable law name from a chunk's filename, for citation."""
+    """Readable law name from a chunk's filename, for citation.
+
+    Bills are labelled explicitly: a Bill is proposed law and may never have been
+    passed, so presenting one as the current rule would mislead a user acting on
+    the answer.
+    """
     raw = doc.metadata.get("source") or ""
     name = os.path.splitext(os.path.basename(raw))[0]
     name = re.sub(r"^[0-9a-f]{6,}_", "", name)       # dedupe prefix from harvesting
     name = re.sub(r"_+", " ", name).strip()
-    return re.sub(r"\s{2,}", " ", name)
+    name = re.sub(r"\s{2,}", " ", name)
+    if BILL_RE.search(name):
+        name += " — A BILL, PROPOSED ONLY, NOT CURRENT LAW"
+    return name
 
 def _load_amendments() -> dict:
     """Which laws are known to have later amendments, written at index time."""
