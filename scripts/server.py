@@ -205,17 +205,19 @@ def spoken_summary(answer: str) -> str:
 def wants_voice_reply(session_id: str) -> bool:
     return ml.get_voice_pref(session_id) == "voice" and ml.tts_budget_left()
 
-def handle_voice_command(text: str, session_id: str) -> str | None:
+def handle_voice_command(text: str, session_id: str, supports_voice: bool = True) -> str | None:
     word = text.lower().strip().lstrip("/")
     if word not in ("voice", "text"):
         return None
-    if word == "voice":
-        if not ml.tts_budget_left():
-            return "Voice replies aren't available right now. I'll keep replying with text."
-        ml.set_voice_pref(session_id, "voice")
-        return "Okay — I'll send a short voice note with each answer, plus the full text."
-    ml.set_voice_pref(session_id, "text")
-    return "Okay — text replies only."
+    if word == "text":
+        ml.set_voice_pref(session_id, "text")
+        return "Okay — text replies only."
+    if not supports_voice:
+        return "Voice replies aren't available on WhatsApp, so I'll keep replying with text."
+    if not ml.tts_budget_left():
+        return "Voice replies aren't available right now. I'll keep replying with text."
+    ml.set_voice_pref(session_id, "voice")
+    return "Okay — I'll send a short voice note with each answer, plus the full text."
 
 def answer_query(query: str, session_id: str) -> str:
     history = session_store.get(session_id, [])
@@ -296,6 +298,11 @@ def whatsapp_reply():
     lang_reply = handle_language_command(incoming_msg, sender)
     if lang_reply:
         msg.body(lang_reply)
+        return str(resp)
+
+    voice_reply = handle_voice_command(incoming_msg, sender, supports_voice=False)
+    if voice_reply:
+        msg.body(voice_reply)
         return str(resp)
 
     t0 = time.monotonic()
