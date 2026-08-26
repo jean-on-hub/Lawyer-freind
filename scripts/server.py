@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -106,7 +107,10 @@ IMPORTANT RULES:
    for example "Under the Rent Act, 1963...". Cite ONLY names shown in brackets.
    Never invent an Act, a section number or a year. If the context has no law that
    fits the question, say so plainly instead of citing something close.
-6. End every answer with: "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
+6. If the context carries a NOTE saying a law was amended, you MUST tell the user
+   the law has changed since then and name the amending law. Say plainly that your
+   answer describes the original text. Never present amended law as current.
+7. End every answer with: "For serious matters, call the Legal Aid Commission on 0302 975 749 or visit lac.gov.gh."
 
 Examples of good clarifying questions:
 - "Are you buying or selling the land?"
@@ -134,6 +138,41 @@ def _source_name(doc) -> str:
     name = re.sub(r"_+", " ", name).strip()
     return re.sub(r"\s{2,}", " ", name)
 
+def _load_amendments() -> dict:
+    """Which laws are known to have later amendments, written at index time."""
+    try:
+        with open(os.path.join(LANCEDB_FOLDER, "amendments.json")) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+AMENDMENTS = _load_amendments()
+if AMENDMENTS:
+    print(f"Amendment warnings loaded for {len(AMENDMENTS)} laws")
+
+
+def _amendment_note(doc) -> str:
+    """A warning line for a law the corpus knows was later changed.
+
+    The distinction between an Act and a Bill matters: an amending Act is law, a
+    Bill is only proposed. Telling someone the rule has changed when a Bill was
+    merely introduced would be its own error.
+    """
+    raw = doc.metadata.get("source") or ""
+    amendments = AMENDMENTS.get(raw) or AMENDMENTS.get(os.path.basename(raw))
+    if not amendments:
+        return ""
+    enacted = [a for a in amendments if not re.search(r"\bbill\b", a, re.I)]
+    proposed = [a for a in amendments if re.search(r"\bbill\b", a, re.I)]
+    bits = []
+    if enacted:
+        bits.append("AMENDED by " + "; ".join(enacted[:3]))
+    if proposed:
+        bits.append("amendment proposed (a Bill, may not be law) in " + "; ".join(proposed[:2]))
+    return "NOTE: this law has been changed since enactment — " + ". ".join(bits) + "."
+
+
 def _format_docs(inputs: dict) -> dict:
     # Each chunk is labelled so the model can cite the law it actually used.
     # Without this the answer is an unverifiable assertion: a user cannot check a
@@ -141,7 +180,11 @@ def _format_docs(inputs: dict) -> dict:
     parts = []
     for doc in inputs["context"]:
         label = _source_name(doc)
-        parts.append(f"[{label}]\n{doc.page_content}" if label else doc.page_content)
+        head = f"[{label}]" if label else ""
+        note = _amendment_note(doc)
+        if note:
+            head = f"{head}\n{note}" if head else note
+        parts.append(f"{head}\n{doc.page_content}" if head else doc.page_content)
     inputs["context"] = "\n\n".join(parts)
     return inputs
 

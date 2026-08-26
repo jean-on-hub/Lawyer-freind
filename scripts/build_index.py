@@ -18,6 +18,7 @@ matter how large the corpus grows.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -34,6 +35,8 @@ SOURCE_DIRS = [
     os.path.join(ROOT, "Legal_documents"),
     os.path.join(ROOT, "Legal_documents", "repository"),
     os.path.join(ROOT, "Legal_documents", "crawled"),
+    # Text recovered by OCR from scanned Acts, which extract nothing on their own
+    os.path.join(ROOT, "Legal_documents", "ocr"),
     # Hand-written referral notes: where to actually go, which statutes never say.
     # Always indexed, never filtered. "pending_verification" is deliberately not
     # listed — a draft with unconfirmed phone numbers must not reach users.
@@ -68,6 +71,44 @@ def is_legislation(name: str) -> bool:
     if NOT_LAW_RE.search(stem):
         return False
     return bool(LAW_RE.search(stem))
+
+
+AMENDMENT_RE = re.compile(r"amendment", re.I)
+AMENDMENTS_FILE = "amendments.json"
+
+
+def _law_key(name: str) -> str:
+    """Normalised identity of a law, so an Act and its amendments collapse together."""
+    s = os.path.splitext(os.path.basename(name))[0]
+    s = re.sub(r"^[0-9a-f]{6,}_", "", s)                       # harvest dedupe prefix
+    s = AMENDMENT_RE.sub(" ", s)
+    s = re.sub(r"\b(no\.?\s*\d+|act|bill|rules|instrument|revised|edition)\b", " ", s, flags=re.I)
+    s = re.sub(r"\b(1[89]|20)\d{2}\b", " ", s)                 # years
+    s = re.sub(r"[^a-z]+", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def build_amendment_map(names: list[str]) -> dict[str, list[str]]:
+    """Map each base law to the amending laws held alongside it.
+
+    The corpus holds Acts as enacted, with no record of what was later changed —
+    the Road Traffic Act 2004 sits next to its 2025 amendment with nothing linking
+    them. Quoting superseded text confidently is the worst failure this bot can
+    have, so retrieval carries a warning when an amendment exists.
+    """
+    by_key: dict[str, list[str]] = {}
+    for n in names:
+        if AMENDMENT_RE.search(n):
+            by_key.setdefault(_law_key(n), []).append(os.path.splitext(n)[0])
+
+    out: dict[str, list[str]] = {}
+    for n in names:
+        if AMENDMENT_RE.search(n):
+            continue
+        hits = by_key.get(_law_key(n))
+        if hits:
+            out[n] = sorted(set(hits))
+    return out
 
 
 def find_sources(limit: int | None, apply_filter: bool) -> list[str]:
@@ -156,8 +197,14 @@ def main():
             print(f"  {i}/{len(pdfs)} files · {total_chunks:,} chunks · "
                   f"{rate:.1f} files/s · ~{eta:.0f} min left")
 
+    # Written next to the index so the server can warn when a law was later amended
+    amendments = build_amendment_map([os.path.basename(p) for p in pdfs])
+    with open(os.path.join(DB_DIR, AMENDMENTS_FILE), "w") as fh:
+        json.dump(amendments, fh, indent=1)
+
     print(f"\nIndexed {total_chunks:,} chunks from {len(pdfs) - failed} files "
           f"({failed} failed)")
+    print(f"{len(amendments)} laws flagged as having amendments in the corpus")
     size = sum(os.path.getsize(os.path.join(dp, f))
                for dp, _, fs in os.walk(DB_DIR) for f in fs)
     print(f"Index on disk: {size / 1e6:.0f} MB at {os.path.normpath(DB_DIR)}")
