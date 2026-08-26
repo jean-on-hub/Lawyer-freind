@@ -65,7 +65,8 @@ Examples of good clarifying questions:
 
 ABOUT YOU — if the user asks what you can do, or asks for another language or for
 voice, do not say you cannot. Tell them the exact word to send:
-- Languages: they send just the word "twi", "ga", "ewe", "dagbani", "fante", "frafra" or "english"
+- Languages: they send just the word "twi", "ga", "ewe", "fante", "dagbani", "frafra",
+  "kusaal", "yoruba" or "english"
 - Voice replies: they send just the word "voice" (and "text" to go back)
 - They can send you a voice note in English and you will understand it
 - To start a new topic they send "new"
@@ -131,8 +132,8 @@ def clear_session(session_id: str) -> None:
 # ---- Language selection ----
 # Chosen explicitly rather than auto-detected: detection would burn a Khaya call
 # on every message, and the free tier only allows 100 calls a month.
-LANGUAGE_HELP = ("Reply with a language to switch: english, twi, ga, ewe, dagbani, fante, frafra.\n"
-                 "You can also send a voice note in English.")
+LANGUAGE_HELP = ("Reply with a language to switch: " + ", ".join(ml.GHANA_LANGUAGES) + ".\n"
+                 "Yoruba is also available. You can send a voice note in English.")
 
 # Users write "can you speak twi?" far more often than a bare "twi", so short
 # messages are matched on intent too. Legal questions that merely mention a
@@ -160,7 +161,7 @@ def handle_language_command(text: str, session_id: str) -> str | None:
         return None
 
     code = ml.LANGUAGES[word]
-    if code != "en":
+    if code != "eng":
         if not ml.KHAYA_API_KEY:
             return ("Ghanaian languages aren't switched on yet — I can help in English for now. "
                     "You can send a voice note in English if that's easier.")
@@ -169,7 +170,7 @@ def handle_language_command(text: str, session_id: str) -> str | None:
                     "I can still help in English — just ask your question.")
     ml.set_language(session_id, code)
     clear_session(session_id)
-    if code == "en":
+    if code == "eng":
         return "Switched to English. What legal question can I help you with?"
     confirm = f"Switched to {word.title()}. Ask your question."
     try:
@@ -188,7 +189,7 @@ def answer_in_language(query: str, session_id: str) -> tuple[str, str]:
     spent: a reply in the wrong language beats no reply at all.
     """
     lang = ml.get_language(session_id)
-    if lang == "en":
+    if lang == "eng":
         answer = answer_query(query, session_id)
         return answer, answer
 
@@ -279,7 +280,7 @@ VOICE_FAILED = ("I couldn't understand that voice note. Please try again, "
 def transcribe_voice(audio: bytes, session_id: str, filename: str) -> str:
     """English voice is free (Whisper); Ghanaian languages are metered (Khaya)."""
     lang = ml.get_language(session_id)
-    if lang == "en" or not ml.khaya_budget_left(3):
+    if lang == "eng" or not ml.khaya_budget_left(3):
         # Whisper is English-only. For a non-English user with no quota left it is
         # still the better attempt than nothing, since many users code-switch.
         return ml.transcribe_english(audio, filename)

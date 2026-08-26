@@ -33,17 +33,33 @@ TTS_MONTHLY_QUOTA = int(os.environ.get("TTS_MONTHLY_QUOTA", "100"))
 TTS_MAX_CHARS = 200
 TTS_ENABLED = os.environ.get("TTS_ENABLED", "true").lower() not in ("false", "0", "no")
 
-# Khaya language codes. "en" stays on the free path and never costs a call.
+# Official Khaya codes, from GET /v1/languages — do not guess these: the API
+# accepts "tw" as an alias for Twi but rejects invented codes, so a wrong guess
+# fails only for that one language, silently, in production.
+# "eng" stays on the free path and never costs a call.
 LANGUAGES = {
-    "english": "en",
-    "twi": "tw",
+    "english": "eng",
+    "twi": "twi",
     "ga": "gaa",
-    "ewe": "ee",
-    "dagbani": "dag",
+    "ewe": "ewe",
     "fante": "fat",
-    "frafra": "gur",
+    "dagbani": "dag",
+    "frafra": "gur",     # Khaya calls it Gurune; Frafra is the common Ghanaian name
+    "gurune": "gur",
+    "kusaal": "kus",
+    "yoruba": "yor",
+    # Also offered by Khaya, kept for anyone who needs them: East African
+    "kikuyu": "kik",
+    "luo": "luo",
+    "kimeru": "mer",
 }
-LANGUAGE_NAMES = {code: name for name, code in LANGUAGES.items()}
+# Ghanaian languages first — these are what the help text advertises
+GHANA_LANGUAGES = ["english", "twi", "ga", "ewe", "fante", "dagbani", "frafra", "kusaal"]
+LANGUAGE_NAMES = {
+    "eng": "english", "twi": "twi", "gaa": "ga", "ewe": "ewe", "fat": "fante",
+    "dag": "dagbani", "gur": "frafra", "kus": "kusaal", "yor": "yoruba",
+    "kik": "kikuyu", "luo": "luo", "mer": "kimeru",
+}
 
 
 # ---- Storage: language preference + Khaya call metering ----
@@ -74,9 +90,9 @@ def get_language(session_id: str) -> str:
     try:
         with _db() as conn:
             row = conn.execute("SELECT lang FROM user_lang WHERE session_id = ?", (session_id,)).fetchone()
-        return row[0] if row else "en"
+        return row[0] if row else "eng"
     except Exception:
-        return "en"
+        return "eng"
 
 
 def set_language(session_id: str, lang: str) -> None:
@@ -247,8 +263,8 @@ def khaya_transcribe(audio: bytes, lang: str, content_type: str = "audio/mpeg") 
 
 
 def to_english(text: str, lang: str) -> str:
-    return text if lang == "en" else khaya_translate(text, f"{lang}-en")
+    return text if lang == "eng" else khaya_translate(text, f"{lang}-eng")
 
 
 def from_english(text: str, lang: str) -> str:
-    return text if lang == "en" else khaya_translate(text, f"en-{lang}")
+    return text if lang == "eng" else khaya_translate(text, f"eng-{lang}")
