@@ -89,16 +89,20 @@ def _db():
             error     INTEGER DEFAULT 0
         )
     """)
+    # Added after the table shipped, so migrate rather than assume
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+    if "input_type" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN input_type TEXT DEFAULT 'text'")
     conn.commit()
     return conn
 
-def _log(channel: str, user_id: str, duration_ms: int, error: bool = False):
+def _log(channel: str, user_id: str, duration_ms: int, error: bool = False, input_type: str = "text"):
     user_hash = hashlib.sha256(user_id.encode()).hexdigest()[:16]
     try:
         with _db() as conn:
             conn.execute(
-                "INSERT INTO messages (channel, user_hash, duration_ms, error) VALUES (?,?,?,?)",
-                (channel, user_hash, duration_ms, int(error))
+                "INSERT INTO messages (channel, user_hash, duration_ms, error, input_type) VALUES (?,?,?,?,?)",
+                (channel, user_hash, duration_ms, int(error), input_type)
             )
     except Exception:
         pass  # never let logging break the bot
@@ -331,10 +335,12 @@ def stats():
     with _db() as conn:
         totals = conn.execute("""
             SELECT channel,
-                   COUNT(*)                             AS messages,
-                   COUNT(DISTINCT user_hash)            AS unique_users,
-                   SUM(error)                           AS errors,
-                   ROUND(AVG(duration_ms))              AS avg_ms
+                   COUNT(*)                                            AS messages,
+                   COUNT(DISTINCT user_hash)                           AS unique_users,
+                   SUM(error)                                          AS errors,
+                   ROUND(AVG(duration_ms))                             AS avg_ms,
+                   SUM(CASE WHEN input_type = 'voice' THEN 1 ELSE 0 END) AS voice_messages,
+                   ROUND(AVG(CASE WHEN input_type = 'voice' THEN duration_ms END)) AS voice_avg_ms
             FROM messages GROUP BY channel
         """).fetchall()
         daily = conn.execute("""
@@ -347,7 +353,8 @@ def stats():
     used = ml.khaya_calls_this_month()
     tts_used = ml.tts_calls_this_month()
     return jsonify({
-        "totals": [dict(zip(["channel","messages","unique_users","errors","avg_ms"], r)) for r in totals],
+        "totals": [dict(zip(["channel","messages","unique_users","errors","avg_ms",
+                             "voice_messages","voice_avg_ms"], r)) for r in totals],
         "last_30_days": [dict(zip(["date","channel","messages"], r)) for r in daily],
         "khaya_quota": {
             "used_this_month": used,
@@ -429,6 +436,10 @@ def telegram_reply():
     session_id = f"tg_{chat_id}"
     text = message.get("text", "").strip()
 
+    # Timed from here so voice includes download + transcription, otherwise a
+    # voice note is indistinguishable from a text one in /stats
+    t0 = time.monotonic()
+
     # Voice note or forwarded audio: Telegram gives a file_id to resolve first
     voice = message.get("voice") or message.get("audio")
     sent_voice = bool(voice)
@@ -462,7 +473,6 @@ def telegram_reply():
         send_telegram_message(chat_id, voice_reply)
         return jsonify({"ok": True})
 
-    t0 = time.monotonic()
     try:
         answer, english = answer_in_language(text, session_id)
 
@@ -478,10 +488,12 @@ def telegram_reply():
             answer += VOICE_PROMPT
 
         send_telegram_message(chat_id, answer)
-        _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000))
+        _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000),
+             input_type="voice" if sent_voice else "text")
     except Exception:
         print("TELEGRAM ERROR:", traceback.format_exc())
-        _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000), error=True)
+        _log("telegram", str(chat_id), int((time.monotonic() - t0) * 1000), error=True,
+             input_type="voice" if sent_voice else "text")
         send_telegram_message(chat_id, "Sorry, something went wrong. Please try again, or call the Legal Aid Commission on 0302 975 749 (lac.gov.gh).")
 
     return jsonify({"ok": True})
