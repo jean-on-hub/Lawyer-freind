@@ -147,7 +147,7 @@ class LanceRetriever:
         candidates.sort(key=adjusted)
 
         for r in candidates:
-            if len(rows) >= self.k + 1:
+            if len(rows) >= self.k:
                 break
             key = r.get("text", "")[:120]
             src = re.sub(r"^[0-9a-f]{6,}_", "", r.get("source", "")).lower()
@@ -207,8 +207,11 @@ if groq_api_key:
 
     def _groq(model: str):
         extra = {"reasoning_effort": "low"} if "gpt-oss" in model else {}
+        # max_tokens matters for throttling as well as length: Groq counts the
+        # reserved output against the per-minute allowance, and qwen is limited
+        # to 1,000 output tokens a minute, so an uncapped request is refused.
         return ChatGroq(model=model, temperature=0.2, api_key=groq_api_key,
-                        max_retries=0, timeout=40, **extra)
+                        max_retries=0, timeout=40, max_tokens=700, **extra)
 
     llm = _groq(GROQ_MODEL).with_fallbacks(
         [_groq(m) for m in GROQ_FALLBACK_MODELS if m != GROQ_MODEL])
@@ -648,11 +651,18 @@ def answer_query(query: str, session_id: str) -> str:
 
     docs = retriever.invoke(retrieval_query)
 
-    answer = docs_chain.invoke({
-        "input": query,
-        "context": docs,
-        "chat_history": history[-4:],
-    })
+    payload = {"input": query, "context": docs, "chat_history": history[-4:]}
+    # Last resort when every model in the chain is throttled at once: the
+    # allowance refills continuously, so a short wait usually clears it, and a
+    # slow answer is better than "something went wrong".
+    for attempt in range(3):
+        try:
+            answer = docs_chain.invoke(dict(payload))
+            break
+        except Exception as e:
+            if attempt == 2 or "429" not in str(e):
+                raise
+            time.sleep(6)
 
     if session_id not in session_store:
         session_store[session_id] = []
