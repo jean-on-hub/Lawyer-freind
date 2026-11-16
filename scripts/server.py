@@ -51,6 +51,15 @@ def _number_words(n: int) -> str:
     rest = n % 100
     return _ONES[n // 100] + " hundred" + (" and " + _number_words(rest) if rest else "")
 
+# Laws that govern a particular service or body rather than the public. Their
+# rules — 42 days' leave for senior fire officers, theft under military law —
+# were being applied to ordinary people who asked general questions.
+SPECIAL_GROUP_RE = re.compile(
+    r"fire service|armed forces|parliamentary service|police service|prisons service|"
+    r"immigration service|customs|revenue authority|civil service|local government service|"
+    r"judicial service|audit service|education service|health service|national service|"
+    r"conditions of service|staff regulations|scheme of service", re.I)
+
 # The general laws most people's questions fall under. Matched on file name.
 CORE_LAW_RE = re.compile(
     r"labour act|criminal offences ?act|criminal and other offences|ghana constitution|"
@@ -199,6 +208,8 @@ class LanceRetriever:
             # from the Labour Act, not the Fire Service regulations.
             if CORE_LAW_RE.search(r.get("source", "")):
                 fused[key] *= 1.25
+            elif SPECIAL_GROUP_RE.search(r.get("source", "")) and not SPECIAL_GROUP_RE.search(query):
+                fused[key] *= 0.6
 
         per_source: dict[str, int] = {}
         order = sorted(fused, key=fused.get, reverse=True)
@@ -207,7 +218,9 @@ class LanceRetriever:
         # which says "spouse" and "physical abuse", so fusion alone buried the
         # one law that answers it.
         top_vec = [_chunk_key(r) for r in lists[0]
-                   if not BILL_RE.search(r.get("source", ""))][: self.GUARANTEED_VECTOR]
+                   if not BILL_RE.search(r.get("source", ""))
+                   and not (SPECIAL_GROUP_RE.search(r.get("source", ""))
+                            and not SPECIAL_GROUP_RE.search(query))][: self.GUARANTEED_VECTOR]
         order = top_vec + [k for k in order if k not in top_vec]
         for key in order:
             if len(rows) >= self.k:
@@ -297,6 +310,10 @@ IMPORTANT RULES:
    laws for special groups such as the armed forces, fire service or parliament.
    If a detail would change the answer, give the general answer and mention the
    detail in one sentence instead of asking first.
+   If the only law in the context that covers the point is one for a special
+   group (fire service, armed forces, police, parliament or civil service staff),
+   do NOT apply it to the user. Say the general rule is not in the material you
+   have, and suggest they check the Labour Act or ask Legal Aid.
 2. When you do answer, be direct and specific — no bullet-point encyclopaedias. 2–4 short paragraphs max.
 3. Plain language only. No legal jargon.
 4. Use the context below. If it only partly covers the topic, answer what you can and say what's unclear.
@@ -710,6 +727,32 @@ def handle_voice_command(text: str, session_id: str, supports_voice: bool = True
         reply += " The spoken part is in English only."
     return reply
 
+ANSWER_LOG_QUESTIONS = os.environ.get("ANSWER_LOG_QUESTIONS", "false").lower() in ("1", "true", "yes")
+
+def _log_answer(query: str, docs, answer: str) -> None:
+    """Record what the bot retrieved and said, so a reported wrong answer can be
+    traced. Before this, answers were unrecoverable: three wrong ones reported in
+    September could not be diagnosed at all.
+
+    The question itself is stored only as a hash unless ANSWER_LOG_QUESTIONS is
+    set, because people ask this bot about abuse, arrests and family disputes.
+    No sender identifier is stored.
+    """
+    try:
+        with _db() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT DEFAULT (datetime('now')),
+                question_hash TEXT, question TEXT, sources TEXT, answer TEXT)""")
+            conn.execute(
+                "INSERT INTO answers (question_hash, question, sources, answer) VALUES (?,?,?,?)",
+                (hashlib.sha256(query.strip().lower().encode()).hexdigest()[:16],
+                 query if ANSWER_LOG_QUESTIONS else None,
+                 json.dumps([_source_name(d) for d in docs]),
+                 answer))
+    except Exception:
+        pass  # never let logging break the bot
+
+
 def answer_query(query: str, session_id: str) -> str:
     history = session_store.get(session_id, [])
 
@@ -739,6 +782,7 @@ def answer_query(query: str, session_id: str) -> str:
     session_store[session_id].extend([HumanMessage(content=query), AIMessage(content=answer)])
     session_store[session_id] = session_store[session_id][-10:]
 
+    _log_answer(query, docs, answer)
     return answer
 
 # ---- Voice ----
@@ -850,6 +894,23 @@ def whatsapp_reply():
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok"}, 200
+
+@app.route("/answers", methods=["GET"])
+def recent_answers():
+    """Most recent answers with the laws they drew on. Same key as /stats."""
+    key = os.environ.get("STATS_KEY")
+    if not key or request.args.get("key") != key:
+        return jsonify({"error": "unauthorized"}), 401
+    limit = min(int(request.args.get("limit", 20)), 200)
+    try:
+        with _db() as conn:
+            rows = conn.execute("SELECT ts, question_hash, question, sources, answer FROM answers "
+                                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    except Exception:
+        rows = []
+    return jsonify([{"ts": r[0], "question_hash": r[1], "question": r[2],
+                     "sources": json.loads(r[3] or "[]"), "answer": r[4]} for r in rows])
+
 
 @app.route("/stats", methods=["GET"])
 def stats():
