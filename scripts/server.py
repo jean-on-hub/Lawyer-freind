@@ -34,6 +34,13 @@ CITATION_RE = re.compile(r"\b(order|section|article|rule|s|art)\.?\s*(\d{1,3})\b
 # text, so both are searched.
 ACT_NUMBER_RE = re.compile(r"\b(act|pndcl|c\.?\s?i\.?|l\.?\s?i\.?|nrcd|smcd|nlcd)\s*\.?\s*(\d{1,4})\b", re.I)
 BILL_RE = re.compile(r"\bbill\b", re.I)
+# The general laws most people's questions fall under. Matched on file name.
+CORE_LAW_RE = re.compile(
+    r"labour act|criminal offences ?act|criminal and other offences|ghana constitution|"
+    r"childrens act|rent act|intestate succession|matrimonial causes|marriages|wills act|"
+    r"domestic violence|land act 2020|conveyancing|contracts act|road traffic act|"
+    r"data protection|persons with disability|national pensions act|companies act 2019|"
+    r"legal aid|juvenile justice|courts act|evidence act|workmen", re.I)
 
 
 class LanceRetriever:
@@ -108,23 +115,54 @@ class LanceRetriever:
         return sorted(by_text.values(), key=score, reverse=True)
 
     def invoke(self, query: str):
-        rows = self._citation_hits(query)[: self.k]
+        # Cited provisions first, but capped: every chunk costs tokens, and the
+        # free Groq tier allows only 8,000 a minute across all users.
+        rows = self._citation_hits(query)[:3]
         seen = {r.get("text", "")[:120] for r in rows}
-        # Over-fetch, then put enacted law ahead of Bills. 43% of the corpus is
-        # Bills, and they were outranking the Acts they were meant to replace —
-        # answering a tenancy question from the Rent Bill 2023 states proposed
-        # rules as if they were in force.
-        semantic = self.table.search(embedder.embed_query(query)).limit(self.k * 3).to_list()
-        semantic.sort(key=lambda r: bool(BILL_RE.search(r.get("source", ""))))
-        for r in semantic:
+        per_source: dict[str, int] = {}
+
+        # Search every partition and re-score against the full vectors. The
+        # index's default approximate search dropped the Labour Act and the
+        # Criminal Offences Act out of the top five for plain questions.
+        search = self.table.search(embedder.embed_query(query))
+        try:
+            search = search.nprobes(64).refine_factor(10)
+        except Exception:
+            pass
+        candidates = search.limit(40).to_list()
+
+        # With 1,115 documents, special-purpose laws outrank the general one: a
+        # question about annual leave matched the Fire Service regulations, and
+        # one about stealing matched the Armed Forces Act. General laws that
+        # ordinary people are governed by get a head start; Bills, which are
+        # only proposed, are pushed back.
+        def adjusted(r):
+            src = r.get("source", "")
+            d = r.get("_distance", 1.0)
+            if BILL_RE.search(src):
+                return d * 1.25
+            if CORE_LAW_RE.search(src):
+                return d * 0.80
+            return d
+        candidates.sort(key=adjusted)
+
+        for r in candidates:
+            if len(rows) >= self.k + 1:
+                break
             key = r.get("text", "")[:120]
-            if key not in seen and len(rows) < self.k * 2:
-                seen.add(key)
-                rows.append(r)
+            src = re.sub(r"^[0-9a-f]{6,}_", "", r.get("source", "")).lower()
+            # No single document may fill the context: five chunks of the
+            # Marriages Act left no room for the Children's Act, which is where
+            # the minimum age of marriage actually is.
+            if key in seen or per_source.get(src, 0) >= 2:
+                continue
+            seen.add(key)
+            per_source[src] = per_source.get(src, 0) + 1
+            rows.append(r)
         return [
             Document(page_content=r.get("text", ""),
                      metadata={"source": r.get("source", ""), "page": r.get("page", 0)})
-            for r in rows[: self.k * 2]
+            for r in rows
         ]
 
 
@@ -157,14 +195,24 @@ groq_api_key = os.environ.get("GROQ_API_KEY")
 #   https://api.groq.com/openai/v1/models
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
+# Groq's free tier allows 8,000 tokens a minute PER MODEL, about three answers.
+# Past that the primary model returns 429 and users waited 20 seconds or got an
+# error. Each model has its own allowance, so the chain moves to the next one
+# instead of waiting. It also covers a model being retired.
+GROQ_FALLBACK_MODELS = [m.strip() for m in os.environ.get(
+    "GROQ_FALLBACK_MODELS", "openai/gpt-oss-20b,qwen/qwen3.8-27b").split(",") if m.strip()]
+
 if groq_api_key:
     from langchain_groq import ChatGroq
-    llm = ChatGroq(
-        model=GROQ_MODEL,
-        temperature=0.2,
-        api_key=groq_api_key,
-    )
-    print(f"Using Groq (cloud) — model: {GROQ_MODEL}")
+
+    def _groq(model: str):
+        extra = {"reasoning_effort": "low"} if "gpt-oss" in model else {}
+        return ChatGroq(model=model, temperature=0.2, api_key=groq_api_key,
+                        max_retries=0, timeout=40, **extra)
+
+    llm = _groq(GROQ_MODEL).with_fallbacks(
+        [_groq(m) for m in GROQ_FALLBACK_MODELS if m != GROQ_MODEL])
+    print(f"Using Groq (cloud) — model: {GROQ_MODEL}, then {GROQ_FALLBACK_MODELS}")
 else:
     from langchain_community.llms import Ollama
     llm = Ollama(model=os.environ.get("OLLAMA_MODEL", "gemma4"), temperature=0.2)
@@ -603,7 +651,7 @@ def answer_query(query: str, session_id: str) -> str:
     answer = docs_chain.invoke({
         "input": query,
         "context": docs,
-        "chat_history": history[-6:],
+        "chat_history": history[-4:],
     })
 
     if session_id not in session_store:
