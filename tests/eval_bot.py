@@ -97,6 +97,8 @@ def main():
         answer = send(args.url, user, q)
         secs = time.time() - t0
         body = answer.split("For serious matters")[0]
+        # "twelve (12) weeks" should satisfy a check for "twelve weeks"
+        body = re.sub(r"\s*\(\d+\)", "", body)
         law_ok = bool(re.search(law, body, re.I))
         fact_ok = bool(re.search(fact, body, re.I))
         ok = law_ok and fact_ok
