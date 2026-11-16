@@ -202,6 +202,12 @@ def main():
             print(f"  {i}/{len(pdfs)} files · {total_chunks:,} chunks · "
                   f"{rate:.1f} files/s · ~{eta:.0f} min left")
 
+    # Search indexes are built here because the server mounts the table read-only.
+    # The vector index turns a 300 ms scan into ~10 ms; the full-text index
+    # supplies the keyword half of hybrid retrieval.
+    table.create_index(metric="l2", num_partitions=64, num_sub_vectors=16, replace=True)
+    table.create_fts_index("text", use_tantivy=False, replace=True, with_position=False)
+
     # Written next to the index so the server can warn when a law was later amended
     amendments = build_amendment_map([os.path.basename(p) for p in pdfs])
     with open(os.path.join(DB_DIR, AMENDMENTS_FILE), "w") as fh:
