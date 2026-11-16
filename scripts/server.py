@@ -22,7 +22,7 @@ import multilingual as ml
 VECTOR_STORE_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_vectors")
 LANCEDB_FOLDER = os.path.join(os.path.dirname(__file__), "..", "ghana_law_lancedb")
 EMBED_MODEL = "all-MiniLM-L6-v2"  # lightweight — fits in cloud free-tier RAM
-RETRIEVE_K = int(os.environ.get("RETRIEVE_K", "5"))
+RETRIEVE_K = int(os.environ.get("RETRIEVE_K", "6"))
 
 embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
 
@@ -121,7 +121,7 @@ class LanceRetriever:
 
     VECTOR_WEIGHT = 1.0
     GUARANTEED_VECTOR = 2
-    PER_SOURCE = 2
+    PER_SOURCE = 3
     DEPTH = 60
     GUARANTEED_KEYWORD = 2
 
@@ -272,7 +272,10 @@ class LanceRetriever:
             src = re.sub(r"^[0-9a-f]{6,}_", "", info[key].get("source", "")).lower()
             # No single document may fill the context: five chunks of the
             # Marriages Act left no room for the Children's Act, which holds
-            # the minimum age of marriage.
+            # the minimum age of marriage. The cap is three, not two, because a
+            # long section is split into pieces that all repeat its heading, and
+            # with two slots the piece of s.57 stating "twelve weeks" of
+            # maternity leave lost to its own neighbours.
             if key in seen or per_source.get(src, 0) >= self.PER_SOURCE:
                 continue
             seen.add(key)
