@@ -43,6 +43,18 @@ SOURCE_DIRS = [
     os.path.join(ROOT, "Legal_documents", "practical"),
 ]
 TEXT_EXTS = (".md", ".txt")
+
+# Known OCR misreads in scanned Acts, corrected at index time so the fix survives
+# re-running OCR. Only add an entry after checking it against an independent
+# source; each one changes what the bot tells people.
+OCR_CORRECTIONS = {
+    # Criminal and Other Offences (Procedure) Act, 1960, s.15(1). The scan reads
+    # "forty-eighty hours", which the bot turned into "up to 80 hours" in police
+    # custody. The limit is forty-eight hours, matching Constitution art. 14(3).
+    # "forty-eighty" cannot occur in English, and a scan of all OCR text for such
+    # tens-tens compounds found only this one.
+    "forty-eighty hours": "forty-eight hours",
+}
 MIN_CHUNK = 300
 DB_DIR = os.path.join(ROOT, "ghana_law_lancedb")
 TABLE = "ghana_law"
@@ -248,7 +260,12 @@ def main():
             if path.lower().endswith(TEXT_EXTS):
                 from langchain_core.documents import Document as _Doc
                 with open(path, encoding="utf-8", errors="ignore") as fh:
-                    docs = [_Doc(page_content=fh.read(), metadata={"page": 0})]
+                    raw = fh.read()
+                for wrong, right in OCR_CORRECTIONS.items():
+                    if wrong in raw:
+                        raw = raw.replace(wrong, right)
+                        print(f"  corrected OCR in {name[:50]}: '{wrong}' -> '{right}'")
+                docs = [_Doc(page_content=raw, metadata={"page": 0})]
             else:
                 docs = PyMuPDFLoader(path).load()
             if args.fixed_chunks:
