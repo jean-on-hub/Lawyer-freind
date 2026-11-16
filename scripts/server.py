@@ -46,7 +46,13 @@ LAY_TO_LEGAL = {
     "verbal": "oral writing", "spoken": "oral", "written": "writing",
     "sack": "dismissal termination", "sacked": "dismissal termination", "fired": "dismissal termination",
     "boss": "employer", "salary": "remuneration wages", "pay": "remuneration wages",
-    "beat": "assault violence", "beats": "assault violence", "beating": "assault violence",
+    # "correction" is how the Children's Act and Criminal Offences Act describe
+    # disciplining a child; without it "can a child be beaten at school" found
+    # only general assault law and the bot overstated it as always an offence.
+    "beat": "assault violence correction", "beats": "assault violence correction",
+    "beating": "assault violence correction", "beaten": "assault violence correction",
+    "cane": "correction", "caned": "correction", "caning": "correction", "flog": "correction",
+    "discipline": "correction", "smack": "correction", "spank": "correction",
     "hit": "assault", "slap": "assault", "abuse": "violence",
     "husband": "spouse", "wife": "spouse", "kid": "child", "kids": "children",
     "jail": "imprisonment prison", "prison": "imprisonment",
