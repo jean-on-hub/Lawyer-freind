@@ -60,6 +60,14 @@ LAY_TO_LEGAL = {
     "arrest": "arrest custody", "arrested": "arrest custody", "detained": "detention custody",
     "bail": "bail", "fine": "penalty fine", "punishment": "penalty imprisonment felony",
     "drunk": "alcohol", "drink": "alcohol",
+    "hold": "detention custody brought before court", "held": "detention custody brought before court",
+    "keep": "detention custody", "court": "court brought before",
+    "force": "force betrothed", "forced": "force betrothed",
+    "marry": "marriage married betrothed", "married": "marriage married",
+    "pension": "pension superannuation retirement", "retire": "retirement compulsory",
+    "retirement": "retirement compulsory superannuation",
+    "murder": "murder life imprisonment", "killing": "murder manslaughter",
+    "death": "death intestate penalty",
 }
 
 _ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
@@ -114,6 +122,7 @@ class LanceRetriever:
     VECTOR_WEIGHT = 1.0
     GUARANTEED_VECTOR = 2
     PER_SOURCE = 2
+    USE_REWRITE = True
 
     def __init__(self, folder: str, table_name: str = "ghana_law", k: int = 5):
         import lancedb
@@ -211,6 +220,16 @@ class LanceRetriever:
                 lists.append(self.table.search(kw, query_type="fts").limit(60).to_list())
         except Exception as e:
             print("FTS unavailable:", str(e)[:80])
+
+        rewrite = statute_rewrite(query) if self.USE_REWRITE else ""
+        if rewrite:
+            try:
+                lists.append(self.table.search(embedder.embed_query(rewrite))
+                             .nprobes(64).refine_factor(10).limit(60).to_list())
+                lists.append(self.table.search(self._keyword_query(rewrite), query_type="fts")
+                             .limit(60).to_list())
+            except Exception as e:
+                print("REWRITE search failed:", str(e)[:80])
 
         fused: dict[str, float] = {}
         info: dict[str, dict] = {}
@@ -319,6 +338,45 @@ else:
     from langchain_community.llms import Ollama
     llm = Ollama(model=os.environ.get("OLLAMA_MODEL", "gemma4"), temperature=0.2)
     print("Using Ollama (local)")
+
+# ---- Query rewriting for search ----
+# People ask "how long can police hold me before I see a court?"; the Constitution
+# says "brought before a court within forty-eight hours after the arrest". Neither
+# meaning-based nor keyword search bridges that gap. A small model rewrites the
+# question in statute-like wording and that text is searched as well.
+#
+# The rewrite is used ONLY to search. It often gets the law itself wrong (it
+# guessed 24 hours, and 20 days' leave) but it uses the right vocabulary, which is
+# all retrieval needs. The answer is still written solely from retrieved text, so
+# a wrong guess here cannot reach a user.
+QUERY_REWRITE = os.environ.get("QUERY_REWRITE", "on").lower() not in ("off", "0", "false", "no")
+REWRITE_PROMPT = ("Write two sentences in the formal wording of a Ghanaian statute (an Act or the "
+                  "Constitution) that would answer this question. Use the legal terms a statute "
+                  "would use. No section numbers or headings. Output only the text.\n\nQuestion: ")
+_rewrite_llm = None
+_rewrite_cache: dict[str, str] = {}
+
+def statute_rewrite(query: str) -> str:
+    global _rewrite_llm
+    if not (QUERY_REWRITE and groq_api_key):
+        return ""
+    if query in _rewrite_cache:
+        return _rewrite_cache[query]
+    try:
+        if _rewrite_llm is None:
+            from langchain_groq import ChatGroq
+            _rewrite_llm = ChatGroq(model=os.environ.get("REWRITE_MODEL", "openai/gpt-oss-20b"),
+                                    api_key=groq_api_key, temperature=0, max_tokens=220,
+                                    reasoning_effort="low", max_retries=0, timeout=4)
+        text = (_rewrite_llm.invoke(REWRITE_PROMPT + query).content or "").strip()
+    except Exception as e:
+        print("REWRITE skipped:", str(e)[:80])
+        text = ""
+    if len(_rewrite_cache) > 500:
+        _rewrite_cache.clear()
+    _rewrite_cache[query] = text
+    return text
+
 
 # ---- Prompt ----
 qa_prompt = ChatPromptTemplate.from_messages([

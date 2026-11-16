@@ -82,6 +82,10 @@ def _law_key(name: str) -> str:
     """Normalised identity of a law, so an Act and its amendments collapse together."""
     s = os.path.splitext(os.path.basename(name))[0]
     s = re.sub(r"^[0-9a-f]{6,}_", "", s)                       # harvest dedupe prefix
+    # "Criminal Offences Act1960" must reduce to the same key as "Criminal Offences
+    # (Amendment) Act 2020"; with "Act1960" fused, the two never matched and the
+    # bot gave no warning that the Act had been amended.
+    s = re.sub(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])", " ", s)
     s = AMENDMENT_RE.sub(" ", s)
     s = re.sub(r"\b(no\.?\s*\d+|act|bill|rules|instrument|revised|edition)\b", " ", s, flags=re.I)
     s = re.sub(r"\b(1[89]|20)\d{2}\b", " ", s)                 # years
