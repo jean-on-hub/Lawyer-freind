@@ -39,6 +39,29 @@ with without from or and it this that who when which will was were has have had 
 would could may must not no yes you your our we they them he she his her its there their
 about into than then so as any all""".split())
 
+# Everyday words mapped to the words statutes use. Keyword search can only match
+# vocabulary the law shares: "is a verbal agreement to sell land binding" found
+# nothing, because the Conveyancing Act speaks of "writing" and "oral".
+LAY_TO_LEGAL = {
+    "verbal": "oral writing", "spoken": "oral", "written": "writing",
+    "sack": "dismissal termination", "sacked": "dismissal termination", "fired": "dismissal termination",
+    "boss": "employer", "salary": "remuneration wages", "pay": "remuneration wages",
+    "beat": "assault violence", "beats": "assault violence", "beating": "assault violence",
+    "hit": "assault", "slap": "assault", "abuse": "violence",
+    "husband": "spouse", "wife": "spouse", "kid": "child", "kids": "children",
+    "jail": "imprisonment prison", "prison": "imprisonment",
+    "lawyer": "legal practitioner counsel", "sue": "action claim court",
+    "steal": "stealing steals", "stole": "stealing steals", "theft": "stealing",
+    "rent": "rent tenancy", "evict": "ejectment possession", "evicted": "ejectment possession",
+    "house": "premises dwelling", "landlord": "landlord", "tenant": "tenant",
+    "will": "will testator", "die": "death intestate", "died": "death intestate",
+    "inherit": "succession estate", "inherits": "succession estate",
+    "divorce": "dissolution marriage", "custody": "custody child",
+    "arrest": "arrest custody", "arrested": "arrest custody", "detained": "detention custody",
+    "bail": "bail", "fine": "penalty fine", "punishment": "penalty imprisonment felony",
+    "drunk": "alcohol", "drink": "alcohol",
+}
+
 _ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
 _TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
 
@@ -157,10 +180,11 @@ class LanceRetriever:
 
         Numbers are added as words too: people write "48 hours" while the
         Constitution says "forty-eight hours", and keyword search cannot see
-        that those match.
+        that those match. Everyday words also bring their statutory equivalents.
         """
         words = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in STOPWORDS]
         extra = [_number_words(int(w)) for w in words if w.isdigit() and int(w) < 1000]
+        extra += [LAY_TO_LEGAL[w] for w in words if w in LAY_TO_LEGAL]
         return " ".join(words + extra)
 
     def invoke(self, query: str):

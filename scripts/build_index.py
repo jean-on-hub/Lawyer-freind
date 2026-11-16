@@ -43,6 +43,7 @@ SOURCE_DIRS = [
     os.path.join(ROOT, "Legal_documents", "practical"),
 ]
 TEXT_EXTS = (".md", ".txt")
+MIN_CHUNK = 300
 DB_DIR = os.path.join(ROOT, "ghana_law_lancedb")
 TABLE = "ghana_law"
 EMBED_MODEL = "all-MiniLM-L6-v2"
@@ -116,6 +117,72 @@ def _dedupe_key(name: str) -> str:
     return re.sub(r"^[0-9a-f]{6,}_", "", name).lower().strip()
 
 
+# A section starts on a line holding just its number — "20." or, from OCR, "124," —
+# or with the number running into "(1)" or a capitalised first word.
+SECTION_START = re.compile(r"(?m)^[ \t]*(\d{1,3}[A-Z]?)[ \t]*[.,][ \t]*(?:$|(?=\(1\)|[A-Z\u201c\"]))")
+
+
+def _section_starts(text: str) -> list[int]:
+    """Offsets where sections begin, moved back to include the margin title.
+
+    Statutes print a short title above the number ("Leave entitlement" / "20."),
+    and that title is often the only place the words a user would search for
+    appear, so it must travel with its section rather than end the previous one.
+    """
+    starts = []
+    for m in SECTION_START.finditer(text):
+        begin = m.start()
+        for _ in range(2):
+            line_start = text.rfind("\n", 0, max(begin - 1, 0)) + 1
+            line = text[line_start:begin].strip()
+            if (0 < len(line) <= 70 and not line.endswith((".", ";", ":", ","))
+                    and not re.match(r"^\(?\d", line)):
+                begin = line_start
+            else:
+                break
+        if not starts or begin > starts[-1]:
+            starts.append(begin)
+    return starts
+
+
+def section_chunks(text: str, target: int, splitter) -> list[str]:
+    """Chunks that begin at section boundaries.
+
+    Fixed 1,000-character windows cut across sections, so a short provision like
+    "every worker is entitled to not less than fifteen working days leave" ended
+    up sharing a chunk with the tail of the previous section and ranked too low
+    to be found. Here small sections are packed together but never split, and a
+    section is only cut when it is long on its own — each piece then repeats the
+    section's heading so it still says what it is about.
+    """
+    starts = _section_starts(text)
+    if len(starts) < 3:
+        return splitter.split_text(text)
+
+    pieces = [text[:starts[0]]] + [text[a:b] for a, b in zip(starts, starts[1:] + [len(text)])]
+    chunks, buf = [], ""
+    for sec in pieces:
+        sec = sec.strip()
+        if not sec:
+            continue
+        if len(sec) > target * 1.4:
+            if buf:
+                chunks.append(buf); buf = ""
+            heading = " ".join(sec.split("\n")[:3])[:100]
+            parts = splitter.split_text(sec)
+            chunks.append(parts[0])
+            chunks += [f"{heading} (continued)\n{p}" for p in parts[1:]]
+        elif buf and (len(buf) + len(sec) > target or len(buf) >= MIN_CHUNK):
+            # Once the buffer holds a real section, the next one starts fresh;
+            # only fragments such as table-of-contents lines are packed together.
+            chunks.append(buf); buf = sec
+        else:
+            buf = f"{buf}\n{sec}" if buf else sec
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
 def find_sources(limit: int | None, apply_filter: bool) -> list[str]:
     seen, out = set(), []
     for d in SOURCE_DIRS:
@@ -144,6 +211,8 @@ def main():
     ap.add_argument("--limit", type=int)
     ap.add_argument("--chunk-size", type=int, default=1000)
     ap.add_argument("--overlap", type=int, default=150)
+    ap.add_argument("--table", default=TABLE, help="table to write (build a test table without touching production)")
+    ap.add_argument("--fixed-chunks", action="store_true", help="old fixed-size chunking instead of section-aware")
     args = ap.parse_args()
 
     pdfs = find_sources(args.limit, not args.no_filter)
@@ -164,9 +233,9 @@ def main():
         pa.field("page", pa.int32()),
     ])
     db = lancedb.connect(DB_DIR)
-    if TABLE in db.table_names():
-        db.drop_table(TABLE)
-    table = db.create_table(TABLE, schema=schema)
+    if args.table in db.table_names():
+        db.drop_table(args.table)
+    table = db.create_table(args.table, schema=schema)
 
     total_chunks, started, failed = 0, time.time(), 0
     for i, path in enumerate(pdfs, 1):
@@ -178,17 +247,30 @@ def main():
                     docs = [_Doc(page_content=fh.read(), metadata={"page": 0})]
             else:
                 docs = PyMuPDFLoader(path).load()
-            chunks = splitter.split_documents(docs)
-            chunks = [c for c in chunks if len(c.page_content.strip()) > 50]
+            if args.fixed_chunks:
+                split = splitter.split_documents(docs)
+                chunks = [(c.page_content, int(c.metadata.get("page", 0) or 0)) for c in split]
+            else:
+                # Join pages so sections that cross a page break stay whole,
+                # remembering where each page starts to label chunks.
+                text, page_at = "", []
+                for d in docs:
+                    page_at.append((len(text), int(d.metadata.get("page", 0) or 0)))
+                    text += d.page_content + "\n"
+                chunks, cursor = [], 0
+                for c in section_chunks(text, args.chunk_size, splitter):
+                    pos = text.find(c[:60], cursor)
+                    if pos >= 0:
+                        cursor = pos
+                    page = max((pg for off, pg in page_at if off <= max(pos, 0)), default=0)
+                    chunks.append((c, page))
+            chunks = [(t, p) for t, p in chunks if len(t.strip()) > 50]
             if not chunks:
                 continue
-            vectors = embedder.embed_documents([c.page_content for c in chunks])
+            vectors = embedder.embed_documents([t for t, _ in chunks])
             table.add([
-                {"vector": v,
-                 "text": c.page_content,
-                 "source": name,
-                 "page": int(c.metadata.get("page", 0) or 0)}
-                for v, c in zip(vectors, chunks)
+                {"vector": v, "text": t, "source": name, "page": p}
+                for v, (t, p) in zip(vectors, chunks)
             ])
             total_chunks += len(chunks)
         except Exception as e:
